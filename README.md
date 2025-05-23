@@ -1,8 +1,7 @@
 ProxyPool 爬虫代理IP池（优化版）
 ================================
-# 该项目由 JHao104 开发
-# 我只是进行了相关部分优化，会持续的对该项目进行优化
-# 官方Github地址：https://github.com/jhao104/proxy_pool/
+# 该项目由 JHao104 开发 Github：https://github.com/jhao104/proxy_pool/
+# 因原项目于2023年2月23日后停止维护，所以我进行部分优化以供使用
 
 # 该项目我已增加爬虫代码，将IP池爬取到的IP:Prot保存到本地以方便使用，详细代码在最下面
 
