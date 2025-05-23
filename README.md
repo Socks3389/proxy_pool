@@ -131,7 +131,6 @@ docker pull redis
 ```
 * 检查镜像
 ```bash
-查看docker镜像
 docker images
 ```
 * 创建Redis配置文件
