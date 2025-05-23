@@ -113,49 +113,7 @@ https://github.com/redis-windows/redis-windows
 
 ##### 安装 Redis 数据库 (Linux)
 
-* Debian/Ubuntu类
-```bash
-sudo apt install -y redis
-```
-
-* RedHat/CentOS类
-```bash
-yum install -y redis
-```
-
-##### Docker 安装 Redis 服务
-* Pull Redis 镜像
-```bash
-docker pull redis
-```
-* 检查镜像
-```bash
-docker images
-```
-* 创建Redis配置文件
-启动前需要先创建Redis外部挂载的配置文件 （ /home/redis/conf/redis.conf ）
-之所以要先创建 , 是因为Redis本身容器只存在 /etc/redis 目录 , 本身就不创建 redis.conf 文件
-当服务器和容器都不存在 redis.conf 文件时, 执行启动命令的时候 docker 会将 redis.conf 作为目录创建 , 这并不是我们想要的结果
-```bash
-## 创建目录
-mkdir -p /home/redis/conf
-## 创建文件
-touch /home/redis/conf/redis.conf
-```
-
-##### 创建Redis容器并启动
-```bash
-docker run \
--d \
---name redis \
--p 6379:6379 \
---restart unless-stopped \
--v /home/redis/data:/data \
--v /home/redis/conf/redis.conf:/etc/redis/redis.conf \
-redis-server /etc/redis/redis.conf \
-redis:bullseye 
- ```
-
+自行百度安装教程，实在不行就用宝塔面板！
 
 ##### 修改项目 setting.py 
 
