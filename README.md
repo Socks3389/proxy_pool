@@ -24,6 +24,7 @@ ProxyPool 爬虫代理IP池（优化版）
 
 ```bash
 git clone https://github.com/Socks3389/proxy_pool.git
+```
 
 ```bash
 https://github.com/Socks3389/proxy_pool/releases 下载对应zip文件
