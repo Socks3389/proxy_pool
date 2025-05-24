@@ -86,6 +86,18 @@ stdout_logfile_maxbytes=50MB
 stdout_logfile_backups=10
 ```
 
+##### 重载 Supervisor 配置
+```bash
+sudo supervisorctl update  # 加载新配置
+sudo supervisorctl reload  # 或重启 Supervisor 服务（强效）
+```
+
+##### 设置 Supervisor 开机自启动
+```bash
+systemctl enable supervisor  # 启用开机自启
+systemctl start supervisor   # 启动服务
+```
+
 ##### 查看 supervisor 服务
 
 ```bash
