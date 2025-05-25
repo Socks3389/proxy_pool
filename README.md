@@ -2,7 +2,7 @@ ProxyPool 爬虫代理IP池（优化版）
 ================================
 # 该项目由 JHao104 开发 Github：https://github.com/jhao104/proxy_pool/
 # 因原项目于2023年2月23日后停止维护，所以我进行部分优化以供使用
-# 该项目我已增加爬虫代码，将IP池爬取到的IP:Prot保存到本地以方便使用，详细代码在最下面
+# 该项目我已增加爬虫提取代码，将IP池爬取到的IP:Prot保存到本地以方便使用，详细代码在最下面
 
 ### 运行项目
 
@@ -54,14 +54,14 @@ vim /etc/supervisor/conf.d/proxypool_schedule.conf
 
 ```bash
 [program:proxypool-schedule]
-command=python /www/wwwroot/Proxy_Pool/proxyPool.py schedule
-directory=/www/wwwroot/Proxy_Pool
+command=python /root/proxy_pool/proxyPool.py schedule
+directory=/root/proxy_pool
 autostart=true
 autorestart=true
 startretries=3
 user=root
 redirect_stderr=true
-stdout_logfile=/www/wwwroot/Proxy_Pool/log/schedule.log
+stdout_logfile=/root/proxy_pool/log/schedule.log
 stdout_logfile_maxbytes=50MB
 stdout_logfile_backups=10
 ```
@@ -74,14 +74,14 @@ vim /etc/supervisor/conf.d/proxypool_server.conf
 
 ```bash
 [program:proxypool-server]
-command=python /www/wwwroot/Proxy_Pool/proxyPool.py server
-directory=/www/wwwroot/Proxy_Pool
+command=python /root/proxy_pool/proxyPool.py server
+directory=/root/proxy_pool
 autostart=true
 autorestart=true
 startretries=3
 user=root
 redirect_stderr=true
-stdout_logfile=/www/wwwroot/Proxy_Pool/log/server.log
+stdout_logfile=/root/proxy_pool/log/server.log
 stdout_logfile_maxbytes=50MB
 stdout_logfile_backups=10
 ```
@@ -140,7 +140,7 @@ PORT = 5000                    # 监听端口
 
 # 配置数据库
 
-DB_CONN = 'redis://:pwd@127.0.0.1:6379/0'               # redis://:密码@127.0.0.1:8888/0
+DB_CONN = 'redis://:pwd@127.0.0.1:6379/0'               # redis://:密码@127.0.0.1:6379/0
 
 
 # 配置 ProxyFetcher
@@ -167,7 +167,8 @@ PROXY_FETCHER = [
 | /count | GET | 查看代理数量 |None|
 | /delete | GET | 删除代理  |`?proxy=host:ip`|
 
-### 爬虫提取（将爬取到的IP:Prot保存下来）
+### 爬虫提取示例（将WebApi中proxy值提取到ip.txt中）
+#### 将目标网址修改成自己的
 
 ```python
 import requests
