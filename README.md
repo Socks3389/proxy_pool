@@ -3,6 +3,12 @@ ProxyPool 爬虫代理IP池（优化版）
 ## 该项目由 JHao104 开发 Github：https://github.com/jhao104/proxy_pool/
 ## 因原项目于2023年2月23日后停止维护，所以我进行部分优化以供使用
 ## 该项目我已增加爬虫提取代码，将IP池爬取到的IP:Prot保存到本地以方便使用，详细代码在最下面
+================================
+
+================================
+更新内容：修复检查IP地理位置及ISP信息，增加爬虫提取代码（请看最下方）
+预更新：删除部分在国内机器上无法爬取的IP池，更换新的IP池。
+================================
 
 ### 运行项目
 
@@ -34,94 +40,24 @@ https://github.com/Socks3389/proxy_pool/releases 下载对应zip文件
 pip install -r requirements.txt
 ```
 
-##### 安装 supervisor 进程守护
+##### 后台运行
 
-* Debian/Ubuntu类
-```bash
-sudo apt install -y supervisor
-```
-
-* RedHat/CentOS类
-```bash
-yum install -y supervisor
-```
-
-##### 创建 schedule 配置文件
+* 在项目根目录下执行 nohup 命令（重启需手动再次启动）
 
 ```bash
-vim /etc/supervisor/conf.d/proxypool_schedule.conf
+nohup python proxyPool.py schedule >> schedule.log 2>&1 &
 ```
-
 ```bash
-[program:proxypool-schedule]
-command=python /root/proxy_pool/proxyPool.py schedule
-directory=/root/proxy_pool
-autostart=true
-autorestart=true
-startretries=3
-user=root
-redirect_stderr=true
-stdout_logfile=/root/proxy_pool/log/schedule.log
-stdout_logfile_maxbytes=50MB
-stdout_logfile_backups=10
+nohup python proxyPool.py server >> server.log 2>&1 &
 ```
-
-##### 创建 server 配置文件
-
-```bash
-vim /etc/supervisor/conf.d/proxypool_server.conf
-```
-
-```bash
-[program:proxypool-server]
-command=python /root/proxy_pool/proxyPool.py server
-directory=/root/proxy_pool
-autostart=true
-autorestart=true
-startretries=3
-user=root
-redirect_stderr=true
-stdout_logfile=/root/proxy_pool/log/server.log
-stdout_logfile_maxbytes=50MB
-stdout_logfile_backups=10
-```
-
-##### 重载 Supervisor 配置
-```bash
-sudo supervisorctl update  # 加载新配置
-sudo supervisorctl reload  # 或重启 Supervisor 服务（强效）
-```
-
-##### 设置 Supervisor 开机自启动
-```bash
-systemctl enable supervisor  # 启用开机自启
-systemctl start supervisor   # 启动服务
-```
-
-##### 查看 supervisor 服务
-
-```bash
-supervisorctl status
-```
-
-##### supervisor 相关命令
-
-```bash
-supervisorctl status                   #查看服务进程
-
-supervisorctl stop 服务器名称           #停止服务
-
-supervisorctl start 服务器名称          #启动服务
-
-supervisorctl restart 服务器名称        #重启服务
-```
+* 也可以使用 supervisor 进程守护（重启自启动）
 
 ##### 安装 Redis 数据库 (Windows)
 
 自行下载 Windows Redis 版本
+```bash
 https://github.com/redis-windows/redis-windows
-
-测试使用的 7.4.3
+```
 
 ##### 安装 Redis 数据库 (Linux)
 
@@ -135,7 +71,7 @@ https://github.com/redis-windows/redis-windows
 # 配置API服务
 
 HOST = "0.0.0.0"               # IP（内网可填写127.0.0.1 外网可填写0.0.0.0）
-PORT = 5000                    # 监听端口
+PORT = 5010                    # 监听端口
 
 
 # 配置数据库
