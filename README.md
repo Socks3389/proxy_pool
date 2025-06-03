@@ -2,7 +2,7 @@ ProxyPool 爬虫代理IP池（优化版）
 ================================
 ## 征集免费代理IP池，让我们将这样项目持续性更新优化下去！
 
-### 投稿邮箱：mailto:socks@kmail.xin
+### 投稿邮箱：socks@kmail.xin
 
 #### 示例：（网站名称） - （网址）如：站大爷 - https://www.zdaye.com/free/
 
