@@ -72,19 +72,20 @@ class DbClient(withMetaclass(Singleton)):
         init DB Client
         :return:
         """
-        __type = None
-        if "SSDB" == self.db_type:
-            __type = "ssdbClient"
-        elif "REDIS" == self.db_type:
-            __type = "redisClient"
-        else:
-            pass
-        assert __type, 'type error, Not support DB type: {}'.format(self.db_type)
-        self.client = getattr(__import__(__type), "%sClient" % self.db_type.title())(host=self.db_host,
-                                                                                     port=self.db_port,
-                                                                                     username=self.db_user,
-                                                                                     password=self.db_pwd,
-                                                                                     db=self.db_name)
+        db_type_map = {
+            "SSDB": "ssdbClient",
+            "REDIS": "redisClient",
+            "MYSQL": "mysqlClient"
+        }
+        __type = db_type_map.get(self.db_type)
+        assert __type, f"type error, Not support DB type: {self.db_type}"
+        self.client = getattr(__import__(__type), f"{self.db_type.title()}Client")(
+            host=self.db_host,
+            port=self.db_port,
+            username=self.db_user,
+            password=self.db_pwd,
+            db=self.db_name
+        )
 
     def get(self, https, **kwargs):
         return self.client.get(https, **kwargs)

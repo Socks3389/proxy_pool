@@ -16,12 +16,14 @@ __author__ = 'JHao'
 from helper.proxy import Proxy
 from db.dbClient import DbClient
 from handler.configHandler import ConfigHandler
+from handler.logHandler import LogHandler
 
 
 class ProxyHandler(object):
     """ Proxy CRUD operator"""
 
     def __init__(self):
+        self.log = LogHandler("proxy_handler")  # 添加日志记录器
         self.conf = ConfigHandler()
         self.db = DbClient(self.conf.dbConn)
         self.db.changeTable(self.conf.tableName)
@@ -34,6 +36,10 @@ class ProxyHandler(object):
         Returns:
         """
         proxy = self.db.get(https)
+        if proxy:
+            self.log.info(f"Fetched proxy: {proxy}")
+        else:
+            self.log.warning("No proxy fetched from database.")
         return Proxy.createFromJson(proxy) if proxy else None
 
     def pop(self, https):
@@ -61,12 +67,14 @@ class ProxyHandler(object):
         """
         return self.db.delete(proxy.proxy)
 
-    def getAll(self, https=False):
+    def getAll(self, https=None):
         """
         get all proxy from pool as Proxy list
+        :param https: None -> all, True -> only https, False -> only http
         :return:
         """
         proxies = self.db.getAll(https)
+        self.log.info(f"Fetched {len(proxies)} proxies from database with https={https}.")
         return [Proxy.createFromJson(_) for _ in proxies]
 
     def exists(self, proxy):
@@ -82,5 +90,6 @@ class ProxyHandler(object):
         return raw_proxy and use_proxy count
         :return:
         """
-        total_use_proxy = self.db.getCount()
-        return {'count': total_use_proxy}
+        count_data = self.db.getCount()
+        self.log.info(f"Proxy count: {count_data}")
+        return count_data
