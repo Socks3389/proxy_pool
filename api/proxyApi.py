@@ -60,6 +60,10 @@ def index():
 def get():
     https = request.args.get("type", "").lower() == 'https'
     proxy = proxy_handler.get(https)
+    if proxy:
+        app.logger.info(f"API response: {proxy.to_dict}")
+    else:
+        app.logger.warning("No proxy available.")
     return proxy.to_dict if proxy else {"code": 0, "src": "no proxy"}
 
 
@@ -92,15 +96,12 @@ def delete():
 
 @app.route('/count/')
 def getCount():
-    proxies = proxy_handler.getAll()
-    http_type_dict = {}
-    source_dict = {}
-    for proxy in proxies:
-        http_type = 'https' if proxy.https else 'http'
-        http_type_dict[http_type] = http_type_dict.get(http_type, 0) + 1
-        for source in proxy.source.split('/'):
-            source_dict[source] = source_dict.get(source, 0) + 1
-    return {"http_type": http_type_dict, "source": source_dict, "count": len(proxies)}
+    count_data = proxy_handler.getCount()
+    return {
+        "http": count_data.get("total") - count_data.get("https"),
+        "https": count_data.get("https"),
+        "total": count_data.get("total")
+    }
 
 
 def runFlask():
