@@ -5,11 +5,11 @@ ProxyPool 爬虫代理IP池（优化版）
 
 ## 更新内容：增加Mysql数据库储存
 
-* 如需稳定使用还请使用 v2.4.5 版本[https://github.com/Socks3389/proxy_pool/releases/tag/v2.4.5]，新版本在更新功能及优化过程中可能存在Bug
+* 如需稳定使用还请使用 v2.4.5 版本
+* https://github.com/Socks3389/proxy_pool/releases/tag/v2.4.5
+* 新版本在更新功能及优化过程中可能存在Bug
 
-* 代理IP地址信息检查可自行搭建API（目前已通过纯真CZ88给出的社区IP库使用Golang编写API服务，将在测试完成之后推出开源，并将下次更新使用）
-
-* API服务目前还在测试当中，已通过 Golang Python 编写API服务，因使用的是CZ88离线社区库，部分IP地址信息可能存在实际差异
+* API服务目前使用 Golang Python 编写API服务，因使用的是CZ88离线社区库，部分IP地址信息可能存在实际差异
 
 * API服务相关代码还请移步 https://github.com/Socks3389/cz88-api
 
