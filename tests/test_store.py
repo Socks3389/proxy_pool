@@ -137,7 +137,7 @@ class TestFailure:
     async def test_target_throttled_does_not_count_as_proxy_failure(self, store):
         """回归：目标站 429/409 是目标站的错，不能把代理判死。
 
-        实测踩坑：httpbin.org 在高并发下会返回 429/409，
+        httpbin.org 在高并发下会返回 429/409，
         旧逻辑一律当成代理失败，连续 2 次就把可用代理淘汰了。
         """
         row = await _one(store)
@@ -295,7 +295,7 @@ class TestOrdering:
     async def test_https_capable_ranked_first(self, store):
         """回归：取代理时支持 HTTPS 的必须排前面。
 
-        实测踩坑：纯 score 排序把"score=100 但只支持 HTTP"的代理排最前，
+        纯 score 排序会把"score=100 但只支持 HTTP"的代理排到最前，
         用 HTTPS 的爬虫拿到 10 个全废（实测默认取 10 个可用率仅 10%）。
         """
         # 一个低分但支持 HTTPS 的

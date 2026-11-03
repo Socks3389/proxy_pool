@@ -161,7 +161,7 @@ class TestBudget:
     async def test_budget_cuts_long_round(self):
         """预算到达必须真的截断，不能等全部跑完。
 
-        实测教训：旧实现用 gather 会等所有任务跑完，预算形同虚设，
+        旧实现用 gather 会等所有任务跑完，预算形同虚设，
         一轮能拖到 324s 超过 5 分钟周期。
         """
         # 1000 条 × 0.2s，并发 100 → 约 2s 才能跑完，预算设 1s 必然截断。
@@ -300,7 +300,7 @@ class TestEmptyRound:
         """空轮时等待时长必须用 due 覆盖，而不是傻等满周期。
 
         实测缺陷：空轮时 wait=300（整周期），due 只有 9s，
-        写成 "if due > wait" 判断永远为假，等于没修。
+        写成 "if due > wait" 判断永远为假，改了也没用。
         """
         sched, store, v = make_sched([])
         store.due = 9.0
