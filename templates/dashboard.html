@@ -224,6 +224,25 @@
   .erow .n { color: var(--fg-2); overflow: hidden; text-overflow: ellipsis; }
   .erow .c { text-align: right; color: var(--bad); font-weight: 600; }
 
+  /* ══════════ 取用反馈 ══════════ */
+  .ubar { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--line-soft); }
+  .ubox { background: var(--surface); padding: 12px 14px; }
+  .ubox-k { color: var(--fg-3); font-size: 11px; }
+  .ubox-v { font-size: 20px; font-weight: 600; letter-spacing: -.02em; margin: 3px 0 1px; }
+  .ubox-s { color: var(--fg-3); font-size: 10.5px; }
+  .urate { display: flex; justify-content: space-between; align-items: baseline;
+           padding: 12px 14px 6px; font-size: 11px; color: var(--fg-3); }
+  .urate .num { font-size: 15px; font-weight: 600; }
+  .urbar { height: 4px; background: var(--surface-2); margin: 0 14px 12px;
+           border-radius: 2px; overflow: hidden; }
+  .urbar i { display: block; height: 100%; border-radius: 2px;
+             transition: width .4s cubic-bezier(.32,.72,0,1); }
+  .uworst { border-top: 1px solid var(--line-soft); padding-top: 10px; }
+  .uworst-hd { padding: 0 14px 6px; color: var(--fg-3); font-size: 10.5px; }
+  .uwrow { display: flex; justify-content: space-between; gap: 10px;
+           padding: 4px 14px; font-size: 11px; color: var(--fg-2); }
+  .uwrow .num { color: var(--fg); }
+
   /* ══════════ 延迟分布 ══════════ */
   .lat-row { display: grid; grid-template-columns: 60px 1fr 34px; gap: 8px;
              align-items: center; padding: 3px 16px; font-family: var(--mono); font-size: 10.5px; }
@@ -436,6 +455,17 @@
         </div>
         <div id="errors">
           <div class="empty"><b>暂无数据</b></div>
+        </div>
+      </section>
+
+      <!-- 取用反馈 -->
+      <section class="card">
+        <div class="card-hd">
+          <h2>取用反馈</h2>
+          <span class="meta" id="usage-meta">—</span>
+        </div>
+        <div class="card-bd" id="usage">
+          <div class="empty"><b>暂无取用</b>爬虫取走代理后这里会有数据</div>
         </div>
       </section>
 
@@ -784,11 +814,61 @@ async function loadErrors() {
       return;
     }
     const max = Math.max(...d.errors.map(e => e.count));
+    const sum = d.errors.reduce((a, e) => a + e.count, 0);
+    // 带上占比：只有条形看不出各类错误的分量，尤其首条经常占一半以上
     $('#errors').innerHTML = d.errors.map(e => `<div class="erow">
       <span class="bar" style="width:${e.count / max * 100}%"></span>
       <span class="n">${esc(e.error)}</span>
-      <span class="c">${fmt(e.count)}</span>
+      <span class="c">${fmt(e.count)} <i style="opacity:.5">${(e.count / sum * 100).toFixed(0)}%</i></span>
     </div>`).join('');
+  } catch (e) { /* 静默 */ }
+}
+
+async function loadUsage() {
+  try {
+    const d = await getJSON('/api/usage');
+    const served = d.served_total || 0;
+    const reported = d.reported_total || 0;
+    $('#usage-meta').textContent = served
+      ? `${fmt(served)} 次取用 · ${(d.client_fail_rate * 100).toFixed(1)}% 上报失效`
+      : '暂无取用';
+
+    if (!served) {
+      $('#usage').innerHTML = '<div class="empty"><b>暂无取用</b>爬虫取走代理后这里会有数据</div>';
+      return;
+    }
+
+    // 上报率是核心指标：高说明池子给的代理在真实场景里不好使
+    const rate = d.client_fail_rate || 0;
+    const rateColor = rate < 0.05 ? 'var(--ok)' : rate < 0.15 ? 'var(--warn)' : 'var(--bad)';
+    const rows = [
+      ['被取用代理数', fmt(d.served_distinct), `共 ${fmt(served)} 次`],
+      ['上报失效', fmt(reported), `${(rate * 100).toFixed(1)}% 的取用`],
+    ];
+
+    let html = `<div class="ubar">
+      ${rows.map(([k, v, sub]) => `<div class="ubox">
+        <div class="ubox-k">${k}</div>
+        <div class="ubox-v num">${v}</div>
+        <div class="ubox-s">${sub}</div>
+      </div>`).join('')}
+    </div>
+    <div class="urate">
+      <span>取用后失效占比</span>
+      <span class="num" style="color:${rateColor}">${(rate * 100).toFixed(1)}%</span>
+    </div>
+    <div class="urbar"><i style="width:${Math.min(rate * 100, 100)}%;background:${rateColor}"></i></div>`;
+
+    if (d.worst && d.worst.length) {
+      html += `<div class="uworst">
+        <div class="uworst-hd">被上报最多的</div>
+        ${d.worst.slice(0, 5).map(w => `<div class="uwrow">
+          <span class="num">${esc(w.ip)}:${w.port}</span>
+          <span>取 ${w.served} 次 · 报错 ${w.reported_fail} 次</span>
+        </div>`).join('')}
+      </div>`;
+    }
+    $('#usage').innerHTML = html;
   } catch (e) { /* 静默 */ }
 }
 
@@ -871,7 +951,7 @@ window.addEventListener('resize', () => {
 });
 
 function loadAll() {
-  loadStats(); loadTrend(); loadLatency(); loadProxies(); loadRounds(); loadErrors();
+  loadStats(); loadTrend(); loadLatency(); loadProxies(); loadRounds(); loadErrors(); loadUsage();
 }
 
 renderApiHint();
