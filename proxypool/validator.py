@@ -349,9 +349,15 @@ class Validator:
                 code = _status_code(status_line)
                 if code != 200:
                     res.error = f"status_{code or 'bad'}"
-                    # 429/409/5xx 是目标站自己限流，不算代理的错。
-                    # httpbin.org 在高并发下会返回 429/409，不区分就会误判可用代理。
-                    res.target_throttled = code in (429, 409, 500, 502, 503, 504)
+                    # 只有 429 才算目标站限流。429 是标准的 Too Many Requests，
+                    # 目标站按 IP 限速时会给这个。
+                    # 409 也归进来：httpbin 在并发下用 409 表示冲突。
+                    #
+                    # 5xx 不算：实测代理返回 503 时正文是
+                    # "Maximum number of open connections reached"，这是代理
+                    # 自己连接池满了，请求根本没出去。把它记成目标站限流会
+                    # 让这类代理逃过淘汰，还让"目标站限流"的统计虚高。
+                    res.target_throttled = code in (429, 409)
                     return
 
                 body = b""

@@ -301,3 +301,57 @@ class TestFakeHttpsDetection:
         ]:
             missing = bool(v._https_nonce and v._https_nonce not in body)
             assert missing is should_fail, f"{body} 判定错了"
+
+
+class TestThrottleClassification:
+    """429/409 是目标站限流，5xx 是代理自己的问题。
+
+    这个区分决定代理要不要被扣分淘汰，弄反了后果不一样：
+    - 把 5xx 当限流 → 连接池满的坏代理逃过淘汰，越积越多
+    - 把 429 当失败 → 好代理被目标站限流误杀
+    """
+
+    async def _probe_with_code(self, code, body=b"x"):
+        async def handler(reader, writer):
+            try:
+                await reader.readuntil(b"\r\n\r\n")
+            except Exception:
+                writer.close()
+                return
+            writer.write(
+                ("HTTP/1.1 %d X\r\nContent-Length: %d\r\n\r\n" % (code, len(body))).encode()
+                + body
+            )
+            await writer.drain()
+            writer.close()
+
+        server = await asyncio.start_server(handler, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        try:
+            v = Validator(ValidatorConfig(timeout=3.0))
+            return await v.probe("http", "127.0.0.1", port)
+        finally:
+            server.close()
+            await server.wait_closed()
+
+    async def test_429_is_throttled(self):
+        r = await self._probe_with_code(429)
+        assert r.target_throttled is True
+
+    async def test_409_is_throttled(self):
+        r = await self._probe_with_code(409)
+        assert r.target_throttled is True
+
+    async def test_503_is_not_throttled(self):
+        """503 是代理自己连接池满了，不能算目标站限流。"""
+        r = await self._probe_with_code(503, b"Maximum number of open connections reached.")
+        assert r.target_throttled is False
+        assert r.ok is False
+
+    async def test_500_is_not_throttled(self):
+        r = await self._probe_with_code(500)
+        assert r.target_throttled is False
+
+    async def test_502_is_not_throttled(self):
+        r = await self._probe_with_code(502)
+        assert r.target_throttled is False
