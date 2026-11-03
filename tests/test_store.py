@@ -631,3 +631,62 @@ class TestTransparentFilter:
 
         got = await store.get_batch(10, exclude_transparent=False)
         assert [p for p in got if p["anonymity"] == "transparent"]
+
+
+class TestReportFailures:
+    """爬虫上报失效代理：提前复检，但不直接判死。"""
+
+    async def test_queues_for_recheck_without_killing(self, store):
+        row = await _one(store)
+        await store.apply_results([(row, ok_result())])
+
+        # 先把下次检查推到很远的将来，模拟"刚验过"
+        async with store.sf() as s:
+            from sqlalchemy import select
+            p = (await s.execute(select(Proxy).where(Proxy.id == row["id"]))).scalars().one()
+            p.next_check_at = utcnow() + dt.timedelta(seconds=600)
+            await s.commit()
+
+        out = await store.report_failures([(row["ip"], row["port"])], reason="timeout")
+        assert out["matched"] == 1
+
+        async with store.sf() as s:
+            from sqlalchemy import select
+            p = (await s.execute(select(Proxy).where(Proxy.id == row["id"]))).scalars().one()
+            # 状态没变，只是复检时间提前了
+            assert p.status == ALIVE, "上报不该直接改状态"
+            assert p.client_fail_count == 1
+            assert p.next_check_at <= utcnow() + dt.timedelta(seconds=1), "应该立刻可复检"
+
+    async def test_unknown_proxy_is_ignored(self, store):
+        out = await store.report_failures([("9.9.9.9", 1234)])
+        assert out["matched"] == 0
+
+    async def test_dead_proxy_not_requeued(self, store):
+        """已经判死的代理不该被爬虫上报拉回复检队列。"""
+        row = await _one(store)
+        for _ in range(3):
+            await store.apply_results([(row, fail_result())])
+        out = await store.report_failures([(row["ip"], row["port"])])
+        assert out["matched"] == 0
+
+
+class TestUsageStats:
+    async def test_counts_served_and_reported(self, store):
+        row = await _one(store)
+        await store.apply_results([(row, ok_result())])
+        await store.get_batch(10)
+        await store.report_failures([(row["ip"], row["port"])])
+
+        u = await store.usage_stats()
+        assert u["served_total"] == 1
+        assert u["served_distinct"] == 1
+        assert u["reported_total"] == 1
+        assert u["alive"] >= 1
+        assert len(u["worst"]) == 1
+        assert u["worst"][0]["reported_fail"] == 1
+
+    async def test_empty_pool(self, store):
+        u = await store.usage_stats()
+        assert u["served_total"] == 0
+        assert u["client_fail_rate"] == 0.0

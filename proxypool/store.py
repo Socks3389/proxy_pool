@@ -202,6 +202,47 @@ class Store:
             # dead 只在到达 ban 阈值前短暂存在，之后由 cleanup 收走。
         return out
 
+    async def report_failures(self, targets: list[tuple[str, int]],
+                              reason: str = "client_reported") -> dict:
+        """接收爬虫上报的失效代理，把它们提前排进下一轮复检。
+
+        不直接判死：爬虫侧失败可能是目标站拦了、本地网络抖了、
+        或者那次请求本身有问题。让验证器下一轮立刻复验，验不过自然会被
+        状态机淘汰。好处是爬虫知道的比定时轮询快，能提前 5 分钟纠错。
+
+        只把 next_check_at 提前到当下，不碰 fail_count / score，
+        避免爬虫的误报污染评分。
+        """
+        if not targets:
+            return {"matched": 0, "queued": 0}
+        now = utcnow()
+        ips = {ip for ip, _ in targets}
+        ports = {port for _, port in targets}
+        pairs = set(targets)
+
+        async with self.sf() as s:
+            rows = await s.execute(
+                select(Proxy.id, Proxy.ip, Proxy.port).where(
+                    Proxy.ip.in_(ips), Proxy.port.in_(ports),
+                    Proxy.status.in_((ALIVE, CANDIDATE)),
+                )
+            )
+            ids = [rid for rid, ip, port in rows if (ip, port) in pairs]
+            if not ids:
+                return {"matched": 0, "queued": 0}
+            await s.execute(
+                update(Proxy)
+                .where(Proxy.id.in_(ids))
+                .values(
+                    next_check_at=now,
+                    last_error=reason[:120],
+                    client_fail_count=Proxy.client_fail_count + 1,
+                )
+            )
+            await s.commit()
+        log.info("爬虫上报 %d 个失效代理，已排入下一轮复检", len(ids))
+        return {"matched": len(ids), "queued": len(ids)}
+
     async def hot_pool_size(self) -> int:
         """热池规模（alive + candidate），用于判断能否 5 分钟全量覆盖。"""
         async with self.sf() as s:
@@ -441,10 +482,12 @@ class Store:
             ).limit(n)
             rows = await s.execute(q)
             out = []
+            served_ids = []
             for p in rows.scalars():
                 rate = None
                 if p.https_try_count:
                     rate = round(p.https_ok_count / p.https_try_count, 2)
+                served_ids.append(p.id)
                 out.append({
                     "protocol": p.protocol,
                     "ip": p.ip,
@@ -457,6 +500,18 @@ class Store:
                     "score": p.score,
                     "last_ok_at": p.last_ok_at.isoformat() if p.last_ok_at else None,
                 })
+            # 记一次取用。单独一个 UPDATE，不放进上面的 SELECT 事务里，
+            # 取代理读多写少，把它做成附带统计而不是阻塞路径。
+            if served_ids:
+                try:
+                    await s.execute(
+                        update(Proxy)
+                        .where(Proxy.id.in_(served_ids))
+                        .values(served_count=Proxy.served_count + 1)
+                    )
+                    await s.commit()
+                except Exception as e:  # noqa: BLE001 - 统计失败不该让取代理失败
+                    log.debug("记录取用次数失败: %s", e)
             return out
 
     async def list_proxies(self, *, page: int = 1, size: int = 50, status: str | None = None,
@@ -500,6 +555,7 @@ class Store:
                     "latency_ms": p.latency_avg_ms,
                     "anonymity": p.anonymity, "supports_https": p.supports_https,
                     "ok_count": p.ok_count, "fail_count": p.fail_count,
+                    "served_count": p.served_count, "client_fail_count": p.client_fail_count,
                     "consecutive_fail": p.consecutive_fail,
                     "exit_ip": p.exit_ip, "last_error": p.last_error,
                     "first_source": p.first_source, "source_count": p.source_count,
@@ -616,6 +672,53 @@ class Store:
                 .group_by(Proxy.anonymity)
             )
             return {(k or "unknown"): n for k, n in rows}
+
+    async def usage_stats(self) -> dict:
+        """取用侧统计。
+
+        验证数据只能说明代理当时能通，说明不了它被取走后有没有真干活。
+        这里给出取用次数和爬虫上报的失效次数，能看出哪些代理
+        "验证通过但从没被用成功过"。
+        """
+        async with self.sf() as s:
+            served_total = (await s.execute(
+                select(func.coalesce(func.sum(Proxy.served_count), 0))
+            )).scalar_one()
+            served_distinct = (await s.execute(
+                select(func.count()).select_from(Proxy).where(Proxy.served_count > 0)
+            )).scalar_one()
+            reported_total = (await s.execute(
+                select(func.coalesce(func.sum(Proxy.client_fail_count), 0))
+            )).scalar_one()
+            reported_distinct = (await s.execute(
+                select(func.count()).select_from(Proxy).where(Proxy.client_fail_count > 0)
+            )).scalar_one()
+
+            # 被取走多次、却从没被上报成功的（可疑：可能验证通过但实际不可用）
+            alive = (await s.execute(
+                select(func.count()).select_from(Proxy).where(Proxy.status == ALIVE)
+            )).scalar_one()
+
+            worst = (await s.execute(
+                select(Proxy.ip, Proxy.port, Proxy.served_count, Proxy.client_fail_count)
+                .where(Proxy.client_fail_count > 0)
+                .order_by(Proxy.client_fail_count.desc())
+                .limit(10)
+            )).fetchall()
+
+        fail_rate = round(reported_total / served_total, 4) if served_total else 0.0
+        return {
+            "served_total": served_total,
+            "served_distinct": served_distinct,
+            "reported_total": reported_total,
+            "reported_distinct": reported_distinct,
+            "client_fail_rate": fail_rate,
+            "alive": alive,
+            "worst": [
+                {"ip": ip, "port": port, "served": s, "reported_fail": f}
+                for ip, port, s, f in worst
+            ],
+        }
 
     # ---------------- 清理 ----------------
 

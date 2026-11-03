@@ -46,7 +46,7 @@ def client():
 
     bare = FastAPI()
     kept = tuple(r for r in api.app.routes
-                 if getattr(r, "path", "").startswith(("/get", "/health", "/api")))
+                 if getattr(r, "path", "").startswith(("/get", "/health", "/api", "/report")))
     bare.routes.extend(kept)
 
     with TestClient(bare) as c:
@@ -130,3 +130,73 @@ class TestGetProxy:
         c, _cfg, _sched = client
         api.state.store = FakeStore([])                   # type: ignore[assignment]
         assert c.get("/get").status_code == 503
+
+
+class TestReportBadProxies:
+    """爬虫上报失效代理，提前排入下一轮复检。"""
+
+    def test_report_accepted(self, client):
+        c, _cfg, _sched = client
+
+        async def fake_report(targets, reason="client_reported"):
+            return {"matched": len(targets), "queued": len(targets)}
+
+        api.state.store = type("S", (), {
+            "report_failures": staticmethod(fake_report),
+        })()
+        r = c.post("/report", json={"proxies": ["1.2.3.4:8080", "5.6.7.8:3128"]})
+        assert r.status_code == 200
+        assert r.json()["matched"] == 2
+
+    def test_rejects_empty_list(self, client):
+        c, _cfg, _sched = client
+        assert c.post("/report", json={"proxies": []}).status_code == 400
+
+    def test_rejects_too_many(self, client):
+        c, _cfg, _sched = client
+        many = [f"1.2.3.{i}:8080" for i in range(300)]
+        assert c.post("/report", json={"proxies": many}).status_code == 400
+
+    def test_skips_malformed_entries(self, client):
+        c, _cfg, _sched = client
+        seen = {}
+
+        async def fake_report(targets, reason="client_reported"):
+            seen["targets"] = targets
+            return {"matched": len(targets), "queued": len(targets)}
+
+        api.state.store = type("S", (), {
+            "report_failures": staticmethod(fake_report),
+        })()
+        r = c.post("/report", json={
+            "proxies": ["1.2.3.4:8080", "bad", "5.6.7.8", "9.9.9.9:70000"],
+        })
+        assert r.status_code == 200
+        assert seen["targets"] == [("1.2.3.4", 8080)]
+
+
+class TestSplitHostPort:
+    """地址拆分要兼容 IPv6，别用 rpartition 想当然。"""
+
+    def test_basic(self):
+        assert api._split_host_port("1.2.3.4:8080") == ("1.2.3.4", 8080)
+
+    def test_ipv6_bracketed(self):
+        assert api._split_host_port("[::1]:8080") == ("::1", 8080)
+
+    def test_ipv6_full(self):
+        assert api._split_host_port("[2001:db8::1]:3128") == ("2001:db8::1", 3128)
+
+    def test_no_port_returns_none(self):
+        assert api._split_host_port("1.2.3.4") is None
+
+    def test_bare_ipv6_returns_none(self):
+        assert api._split_host_port("2001:db8::1") is None
+
+    def test_bad_port(self):
+        assert api._split_host_port("1.2.3.4:99999") is None
+        assert api._split_host_port("1.2.3.4:abc") is None
+
+    def test_empty(self):
+        assert api._split_host_port("") is None
+        assert api._split_host_port("   ") is None

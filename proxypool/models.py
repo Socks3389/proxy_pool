@@ -82,6 +82,12 @@ class Proxy(Base):
     first_source: Mapped[str | None] = mapped_column(String(64), nullable=True)
     source_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
 
+    # 取用统计：被爬虫取走多少次、爬虫上报失效多少次。
+    # 用来判断池子的真实利用率 —— 有些代理验证通过但取走后从没成功过，
+    # 这类光看验证数据是看不出来的。
+    served_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    client_fail_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+
     # 时间戳
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
@@ -187,3 +193,33 @@ async def create_all(engine) -> None:
                 "PRAGMA cache_size=-32000",
             ):
                 await conn.execute(text(pragma))
+        await conn.run_sync(_add_missing_columns)
+
+
+def _add_missing_columns(sync_conn) -> None:
+    """给已有表补上模型里新增的列。
+
+    create_all 只建表不改表，升级后老库会缺列，查询直接报 no such column。
+    这里按模型定义对比实际列，缺什么补什么，避免为此引入 Alembic。
+    只支持加列，改类型和删列仍需手工处理。
+    """
+    from sqlalchemy import inspect
+
+    inspector = inspect(sync_conn)
+    existing_tables = set(inspector.get_table_names())
+    for table in Base.metadata.sorted_tables:
+        if table.name not in existing_tables:
+            continue
+        have = {c["name"] for c in inspector.get_columns(table.name)}
+        for col in table.columns:
+            if col.name in have:
+                continue
+            ddl_type = col.type.compile(dialect=sync_conn.dialect)
+            default = ""
+            if col.server_default is not None:
+                arg = getattr(col.server_default, "arg", None)
+                if arg is not None:
+                    default = f" DEFAULT {arg}"
+            sync_conn.exec_driver_sql(
+                f'ALTER TABLE "{table.name}" ADD COLUMN "{col.name}" {ddl_type}{default}'
+            )

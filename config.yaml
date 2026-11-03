@@ -167,10 +167,16 @@ validator:
   concurrency: 400
   # 单次探测硬超时（秒）。实测 p99 延迟 7.9s，低于 8s 会误杀大量可用代理
   timeout: 8.0
-  # 连接阶段的独立超时。TCP 握手要么几十毫秒通，要么根本不通：
-  # 实测成功连接 p50 是 43ms、p95 2.1s、最长 3.1s，
-  # 4 秒内连不上的，等到 8 秒也一样连不上，只是白白占着预算。
-  connect_timeout: 4.0
+  # 连接阶段超时。看起来单独设短能提速，实测不划算，保持和全局一致。
+  #
+  # 数据：存活代理的 TCP 连接耗时按整秒聚集（<1s 46%、1-2s 16%、2-3s 15%、
+  # 3-4s 15%、4.13s 约 6%）—— 4.13s 那档是经历了两次 SYN 重传的慢链路。
+  # 把它们砍掉（connect=4s）吞吐只从 26.0 涨到 28.1 条/秒（+8%），
+  # 但可用代理少了 16%。
+  #
+  # 拿到那批 4.13s 的代理用 curl 实测：54 条里 44 条真能用（81%），
+  # 不是死地址。为 8% 的吞吐砍掉一批真实可用的代理不值。
+  connect_timeout: 8.0
   # 目标探测站：明文探测拿 origin + headers 判匿名，比 HTTPS 便宜得多
   check_url_http: "http://httpbin.org/get"
   check_url_https: "https://httpbin.org/get?probe=proxypool"

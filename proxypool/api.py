@@ -185,6 +185,64 @@ async def health():
     return {"status": "ok", "alive": counts.get(ALIVE, 0), "total": sum(counts.values())}
 
 
+@app.post("/report")
+async def report_bad_proxies(
+    payload: dict = Body(..., description='{"proxies": ["ip:port", ...], "reason": "timeout"}'),
+):
+    """爬虫上报失效的代理，让它们立刻进入下一轮复检。
+
+    爬虫比定时轮询更早知道哪个代理挂了。上报后不直接判死，
+    只是把复检时间提前，验不过自然会被状态机淘汰 —— 这样爬虫误报
+    也不会冤枉好代理。
+    """
+    raw = payload.get("proxies") or []
+    if not isinstance(raw, list):
+        raise HTTPException(status_code=400, detail="proxies 必须是数组")
+    if len(raw) > 200:
+        raise HTTPException(status_code=400, detail="一次最多上报 200 个")
+
+    targets: list[tuple[str, int]] = []
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        parsed = _split_host_port(item)
+        if parsed is not None:
+            targets.append(parsed)
+    if not targets:
+        raise HTTPException(status_code=400, detail="没有解析出合法的 ip:port")
+
+    reason = str(payload.get("reason") or "client_reported")[:40]
+    return await state.store.report_failures(targets, reason=reason)
+
+
+def _split_host_port(value: str) -> tuple[str, int] | None:
+    """拆 ip:port，兼容 IPv6 的 [::1]:8080 写法。
+
+    直接 rpartition(":") 对 IPv6 会把地址切碎，
+    而且没有端口时返回空 host —— 必须显式判一次。
+    """
+    value = value.strip()
+    if not value:
+        return None
+    if value.startswith("["):                 # [IPv6]:port
+        end = value.find("]")
+        if end < 0:
+            return None
+        port_s = value[end + 1:].lstrip(":")
+        if not port_s.isdigit():
+            return None
+        return value[1:end], int(port_s)
+    if value.count(":") != 1:                  # 无端口或裸 IPv6，都不可用
+        return None
+    host, _, port_s = value.partition(":")
+    if not host or not port_s.isdigit():
+        return None
+    port = int(port_s)
+    if not (1 <= port <= 65535):
+        return None
+    return host, port
+
+
 # ---------------- 管理接口 ----------------
 
 @app.get("/api/stats", dependencies=[Depends(require_admin)])
@@ -282,6 +340,12 @@ async def api_delete_proxies(ids: list[int] = Body(..., embed=True)):
         r = await s.execute(delete(Proxy).where(Proxy.id.in_(ids)))
         await s.commit()
         return {"deleted": r.rowcount or 0}
+
+
+@app.get("/api/usage", dependencies=[Depends(require_admin)])
+async def api_usage():
+    """取用侧统计：池子被用得怎么样，不只是池子里有多少。"""
+    return await state.store.usage_stats()
 
 
 @app.get("/api/config", dependencies=[Depends(require_admin)])
