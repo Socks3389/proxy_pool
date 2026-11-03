@@ -129,9 +129,12 @@ async def _fetch_proxies(
     抽出来是为了避免路由互相调用 —— 直接调带 Query(...) 默认值的路由函数
     不会经过 FastAPI 的参数解析，漏传的参数会保持 Query 对象，
     后续比较直接 TypeError。
+
+    n 没有上限，池子里有多少符合条件就返回多少。调用方要多少给多少，
+    真正能拿到多少由池子规模和筛选条件决定。
     """
     items = await state.store.get_batch(
-        min(n, state.cfg.api.max_batch), protocol=protocol, anonymity=anonymity,
+        n, protocol=protocol, anonymity=anonymity,
         https_only=https_only, max_latency=max_latency, min_score=min_score,
         min_https_rate=https_rate,
         exclude_transparent=not allow_transparent,
@@ -143,7 +146,7 @@ async def _fetch_proxies(
 
 @app.get("/get")
 async def get_proxy(
-    n: int = Query(1, ge=1, le=100, description="取几个"),
+    n: int = Query(1, ge=0, description="取几个；0 表示全部可用的"),
     protocol: str | None = Query(None, description="http/https/socks4/socks5"),
     anonymity: str | None = Query(None, description="elite/anonymous/transparent"),
     https: int = Query(0, ge=0, le=1, description="只要支持 HTTPS 的"),
@@ -170,7 +173,7 @@ async def get_proxy(
 @app.get("/get/{protocol}", response_class=PlainTextResponse)
 async def get_proxy_by_protocol(
     protocol: str,
-    n: int = Query(1, ge=1, le=100),
+    n: int = Query(1, ge=0, description="取几个；0 表示全部可用的"),
     https: int = Query(0, ge=0, le=1),
 ):
     if protocol not in ("http", "https", "socks4", "socks5"):

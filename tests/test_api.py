@@ -21,6 +21,10 @@ class FakeStore:
         self.items = items or []
 
     async def get_batch(self, n, **kw):
+        # 真实实现在 n<=0 时返回全部，桩要跟着对齐，
+        # 否则 items[:0] 永远是空列表，测出来的行为是假的。
+        if n <= 0:
+            return list(self.items)
         return self.items[:n]
 
 
@@ -200,3 +204,46 @@ class TestSplitHostPort:
     def test_empty(self):
         assert api._split_host_port("") is None
         assert api._split_host_port("   ") is None
+
+
+class TestUnlimitedN:
+    """n 不设上限：要多少给多少，能拿多少由池子决定。
+
+    用户明确要求过：最大数量从 100 调到无上限，但不能超过实际可用数量。
+    """
+
+    def test_n_zero_returns_all(self, client):
+        """n=0 表示全部可用。"""
+        c, _cfg, _sched = client
+        api.state.store = FakeStore([                     # type: ignore[assignment]
+            {"ip": f"10.0.0.{i}", "port": 8080, "url": f"http://10.0.0.{i}:8080"}
+            for i in range(1, 4)
+        ])
+        data = c.get("/get", params={"n": 0}).json()
+        assert data["count"] == 3
+
+    def test_n_above_100_allowed(self, client):
+        """n=250 不该再被 100 截断。"""
+        c, _cfg, _sched = client
+        api.state.store = FakeStore([                     # type: ignore[assignment]
+            {"ip": f"10.1.{i // 250}.{i % 250}", "port": 8080,
+             "url": f"http://10.1.{i // 250}.{i % 250}:8080"}
+            for i in range(250)
+        ])
+        data = c.get("/get", params={"n": 250}).json()
+        assert data["count"] == 250, f"n=250 应返回 250 条，实际 {data['count']}"
+
+    def test_huge_n_capped_by_pool_size(self, client):
+        """n 远超可用数时返回全部，不报错也不补空。"""
+        c, _cfg, _sched = client
+        api.state.store = FakeStore([                     # type: ignore[assignment]
+            {"ip": "10.2.0.1", "port": 8080, "url": "http://10.2.0.1:8080"},
+            {"ip": "10.2.0.2", "port": 8080, "url": "http://10.2.0.2:8080"},
+        ])
+        data = c.get("/get", params={"n": 999999}).json()
+        assert data["count"] == 2
+
+    def test_negative_n_rejected(self, client):
+        """负数是不合法的，FastAPI 应该挡下来。"""
+        c, _cfg, _sched = client
+        assert c.get("/get", params={"n": -1}).status_code == 422

@@ -63,7 +63,8 @@ async def _one(store, protocol="http", ip="1.2.3.4", port=8080):
     await store.upsert_many([(protocol, ip, port)], "test")
     async with store.sf() as s:
         from sqlalchemy import select
-        p = (await s.execute(select(Proxy))).scalars().first()
+        # 按 ip 精确取刚插的那条，不能 .first() —— 多代理用例里会拿到别人
+        p = (await s.execute(select(Proxy).where(Proxy.ip == ip))).scalars().first()
         return {"id": p.id, "protocol": p.protocol, "ip": p.ip, "port": p.port, "status": p.status}
 
 
@@ -676,6 +677,8 @@ class TestUsageStats:
         row = await _one(store)
         await store.apply_results([(row, ok_result())])
         await store.get_batch(10)
+        # 取用计数先进内存缓冲，要显式 flush 才落库（响应不等待写库）
+        await store.ash_flush_served()
         await store.report_failures([(row["ip"], row["port"])])
 
         u = await store.usage_stats()
@@ -685,6 +688,38 @@ class TestUsageStats:
         assert u["alive"] >= 1
         assert len(u["worst"]) == 1
         assert u["worst"][0]["reported_fail"] == 1
+
+    async def test_served_count_survives_flush(self, store):
+        """多次取用要累加，不是覆盖。"""
+        row = await _one(store)
+        await store.apply_results([(row, ok_result())])
+        for _ in range(3):
+            await store.get_batch(10)
+        await store.ash_flush_served()
+
+        u = await store.usage_stats()
+        assert u["served_total"] == 3
+
+    async def test_get_batch_n_zero_returns_all(self, store):
+        """n=0 要返回全部可用代理，不是一条都不返回。"""
+        for i in range(1, 6):
+            row = await _one(store, ip=f"8.8.8.{i}")
+            await store.apply_results([(row, ok_result())])
+
+        got_all = await store.get_batch(0)
+        assert len(got_all) == 5, f"n=0 应返回全部 5 条，实际 {len(got_all)}"
+
+        got_two = await store.get_batch(2)
+        assert len(got_two) == 2
+
+    async def test_get_batch_huge_n_capped_by_pool(self, store):
+        """n 超过实际可用数时，返回池子里所有能用的，不报错。"""
+        for i in range(1, 4):
+            row = await _one(store, ip=f"9.9.9.{i}")
+            await store.apply_results([(row, ok_result())])
+
+        got = await store.get_batch(100000)
+        assert len(got) == 3
 
     async def test_empty_pool(self, store):
         u = await store.usage_stats()

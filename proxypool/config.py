@@ -104,7 +104,6 @@ class ApiConfig:
     host: str = "0.0.0.0"
     port: int = 8088
     admin_token: str = ""
-    max_batch: int = 100
 
 
 @dataclass

@@ -44,6 +44,12 @@ curl "http://127.0.0.1:8088/health"
 
 参数：`n` `protocol` `anonymity` `https` `https_rate` `max_latency` `min_score` `allow_transparent` `format`。
 
+`n` 没有上限，要多少给多少；`n=0` 表示要全部。实际能拿多少由池子规模和筛选条件决定 —— 要 100000 个但池子里只有 308 个可用的，就返回 308 个。
+
+```bash
+curl "http://127.0.0.1:8088/get?n=0&format=text"     # 全部可用的，纯 ip:port
+```
+
 跑 HTTPS 目标一定要带 `https_rate=0.5`。免费 HTTP 代理只有 16% 支持 CONNECT，不带这个参数会拿到一堆只能走 HTTP 的。
 
 透明代理默认不返回 —— 它会把你的真实 IP 透给目标站，用了等于没挂。要的话传 `allow_transparent=1`。

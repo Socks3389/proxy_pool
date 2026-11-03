@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import json
 import logging
@@ -21,6 +22,10 @@ from .validator import ProbeResult
 
 log = logging.getLogger("proxypool.store")
 
+# 取用计数缓冲大小。缓冲放实例上而不是模块级 ——
+# 模块级全局会让多个 Store 实例（以及测试用例）互相串数据。
+_SERVED_FLUSH_AT = 500
+
 ALIVE = "alive"
 CANDIDATE = "candidate"
 NEW = "new"
@@ -34,6 +39,61 @@ class Store:
         self.sf = session_factory
         self.cfg = cfg
         self._is_sqlite = cfg.db_url.startswith("sqlite")
+        self._flush_task: asyncio.Task | None = None
+        # 取用计数缓冲：先攒在内存，满了或显式 flush 才落库。
+        # 每次取代理都直接 UPDATE 的话，取 300 条要发一条 IN (300 个 id) 的语句，
+        # 实测会把响应拖到超时（n=0 取全部直接连不上）。
+        self._served_buffer: list[int] = []
+
+    # ---------------- 取用计数 ----------------
+
+    def _bump_served(self, ids: list[int]) -> None:
+        """把取用记到内存并安排落库。同步函数，不 await，不拖慢响应。"""
+        self._served_buffer.extend(ids)
+        if len(self._served_buffer) >= _SERVED_FLUSH_AT:
+            self._schedule_flush()
+
+    def _schedule_flush(self) -> None:
+        """安排一次后台落库，同一时刻只允许一个在跑。"""
+        if self._flush_task and not self._flush_task.done():
+            return
+        self._flush_task = asyncio.create_task(self.ash_flush_served())
+
+    async def ash_flush_served(self) -> int:
+        """把缓冲里的取用计数写进库，返回写入的条数。
+
+        按 id 聚合后再更新：同一批里重复出现的 id 只发一次语句，
+        用加法累加。
+        """
+        if not self._served_buffer:
+            return 0
+        batch = self._served_buffer[:]
+        self._served_buffer.clear()
+
+        counts: dict[int, int] = {}
+        for pid in batch:
+            counts[pid] = counts.get(pid, 0) + 1
+
+        try:
+            async with self.sf() as s:
+                # 按增量分组，把相同增量的 id 合并成一条 UPDATE。
+                # 常规情况增量都是 1，也就是一条语句搞定一批。
+                by_delta: dict[int, list[int]] = {}
+                for pid, n in counts.items():
+                    by_delta.setdefault(n, []).append(pid)
+                for delta, ids in by_delta.items():
+                    for i in range(0, len(ids), 500):
+                        chunk = ids[i:i + 500]
+                        await s.execute(
+                            update(Proxy)
+                            .where(Proxy.id.in_(chunk))
+                            .values(served_count=Proxy.served_count + delta)
+                        )
+                await s.commit()
+            return len(counts)
+        except Exception as e:  # noqa: BLE001 - 统计失败不影响主流程
+            log.debug("写入取用计数失败: %s", e)
+            return 0
 
     # ---------------- 写入 ----------------
 
@@ -479,7 +539,11 @@ class Store:
                 Proxy.supports_https.desc(),
                 Proxy.score.desc(),
                 Proxy.latency_avg_ms.asc().nullslast(),
-            ).limit(n)
+            )
+            # n <= 0 表示要全部：不截断，池子有多少符合条件的就给多少。
+            # 不能简单写成 .limit(0)，SQL 里 LIMIT 0 一行都不会返回。
+            if n > 0:
+                q = q.limit(n)
             rows = await s.execute(q)
             out = []
             served_ids = []
@@ -500,18 +564,11 @@ class Store:
                     "score": p.score,
                     "last_ok_at": p.last_ok_at.isoformat() if p.last_ok_at else None,
                 })
-            # 记一次取用。单独一个 UPDATE，不放进上面的 SELECT 事务里，
-            # 取代理读多写少，把它做成附带统计而不是阻塞路径。
+            # 记取用次数。放到内存缓冲后台落库，不进响应路径：
+            # 一次取 300+ 条时 IN (ids) 的 UPDATE 会拖几百毫秒，
+            # 卡在这里会让整个请求超时（实测 n=0 取全部直接连不上）。
             if served_ids:
-                try:
-                    await s.execute(
-                        update(Proxy)
-                        .where(Proxy.id.in_(served_ids))
-                        .values(served_count=Proxy.served_count + 1)
-                    )
-                    await s.commit()
-                except Exception as e:  # noqa: BLE001 - 统计失败不该让取代理失败
-                    log.debug("记录取用次数失败: %s", e)
+                self._bump_served(served_ids)
             return out
 
     async def list_proxies(self, *, page: int = 1, size: int = 50, status: str | None = None,
