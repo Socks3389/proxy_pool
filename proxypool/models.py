@@ -12,10 +12,8 @@ from __future__ import annotations
 import datetime as dt
 
 from sqlalchemy import (
-    BigInteger,
     Boolean,
     DateTime,
-    Float,
     ForeignKey,
     Index,
     Integer,
@@ -30,14 +28,14 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 def utcnow() -> dt.datetime:
     """统一返回 naive UTC。
 
-    ⚠️ 为什么不用 timezone-aware：
+    为什么不用 timezone-aware：
     SQLite 的 DateTime 列不保存时区，写入时把 aware 对象变成 naive 存储，
     读回来还是 naive。若查询条件用 aware 而库里是 naive，
     SQLAlchemy 就算不报错，区间比较也会错（实测墓碑过滤因此完全失效）。
     全库统一 naive UTC 是 SQLite 项目最省事的做法；
     换 PostgreSQL 时该列是 timestamptz，需要改回 aware。
     """
-    return dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+    return dt.datetime.now(dt.UTC).replace(tzinfo=None)
 
 
 class Base(DeclarativeBase):
@@ -68,7 +66,7 @@ class Proxy(Base):
     latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     latency_avg_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
-    # 能力标记（实测 CONNECT 支持仅 16%，必须单独标记）
+    # 能力标记（只有约 16% 的 HTTP 代理支持 CONNECT，单独记）
     anonymity: Mapped[str | None] = mapped_column(String(12), nullable=True)   # elite/anonymous/transparent
     supports_https: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
     # HTTPS 能力不能只记布尔值：实测同一代理的 TLS 通过率波动很大（部分按 SNI 过滤），
@@ -91,7 +89,7 @@ class Proxy(Base):
     last_ok_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     next_check_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    checks: Mapped[list["CheckLog"]] = relationship(back_populates="proxy", cascade="all, delete-orphan")
+    checks: Mapped[list[CheckLog]] = relationship(back_populates="proxy", cascade="all, delete-orphan")
 
     __table_args__ = (
         UniqueConstraint("protocol", "ip", "port", name="uq_proxy_identity"),
@@ -154,9 +152,9 @@ class RoundStat(Base):
 
 
 class Tombstone(Base):
-    """墓碑表：记住已经判死的代理，防止清理后又被源重新抓回来反复验证。
+    """墓碑表：记录已判死的代理，防止清理后被源重新抓回来反复验证。
 
-    实测踩坑：purge 删掉 dead 后，下一轮抓取把同一批代理全当"新"重新入库
+    purge 删掉 dead 之后，下一轮抓取会把同一批地址当新的重新入库
     （实测新增 13809 条全是刚删的），形成
     「验证失败 → 判死 → 删除 → 重新抓取 → 再验证」的死循环，白烧 CPU 和带宽。
     墓碑表只存身份+死亡时间，体积远小于完整行，也不参与业务查询。

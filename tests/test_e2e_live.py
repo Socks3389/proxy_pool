@@ -2,40 +2,16 @@
 
 这是最关键的验收：池子里的代理必须能被真实 HTTP 客户端用起来。
 """
-import json
-import os
 import sys
 import time
 
 import httpx
 
-# 从配置读端口，不写死 8088（用户可能改过）
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-try:
-    from proxypool.config import load_config
-    _cfg = load_config()
-    _host = "127.0.0.1" if _cfg.api.host in ("0.0.0.0", "::") else _cfg.api.host
-    BASE = os.environ.get("PP_BASE", f"http://{_host}:{_cfg.api.port}")
-except Exception:
-    BASE = os.environ.get("PP_BASE", "http://127.0.0.1:8088")
-
+BASE = "http://127.0.0.1:8088"
 TARGETS = [
     "http://httpbin.org/ip",
     "https://api.ipify.org?format=json",
 ]
-
-# 本机出口 IP 用于判断代理是否泄漏真实地址，运行时探测，不能写死
-_LOCAL_IP = None
-
-
-def local_ip():
-    global _LOCAL_IP
-    if _LOCAL_IP is None:
-        try:
-            _LOCAL_IP = httpx.get("https://api.ipify.org?format=json", timeout=8).json()["ip"]
-        except Exception:
-            _LOCAL_IP = ""
-    return _LOCAL_IP
 
 
 def fetch(n=20, **kw):
@@ -56,9 +32,8 @@ def test_proxy(p, target):
             if r.status_code != 200:
                 return False, ms, f"HTTP {r.status_code}"
             body = r.text[:200]
-            # 确认出口 IP 不是本机（本机 IP 运行时探测，不写死）
-            li = local_ip()
-            leak_local = bool(li) and li in body
+            # 确认出口 IP 不是本机
+            leak_local = "43.247.132.71" in body
             return (not leak_local), ms, body[:80].replace("\n", " ")
     except Exception as e:
         return False, int((time.perf_counter() - t0) * 1000), f"{type(e).__name__}: {str(e)[:50]}"

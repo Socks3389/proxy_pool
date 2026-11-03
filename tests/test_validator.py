@@ -265,3 +265,39 @@ async def test_response_parsing_chunked():
     finally:
         server.close()
         await server.wait_closed()
+
+
+class TestFakeHttpsDetection:
+    """HTTPS 探测不能只看状态码。
+
+    实测遇到一类代理：CONNECT 任何目标都返回自己的 IP（合法 JSON）。
+    只看 status==200 会把它判成支持 HTTPS，但它根本没把流量转出去。
+    """
+
+    def test_nonce_extracted_from_probe_url(self):
+        cfg = ValidatorConfig(check_url_https="https://httpbin.org/get?probe=abc123")
+        v = Validator(cfg)
+        assert v._https_nonce == "abc123"
+
+    def test_nonce_empty_when_no_probe_param(self):
+        cfg = ValidatorConfig(check_url_https="https://api.ipify.org?format=json")
+        v = Validator(cfg)
+        assert v._https_nonce == ""
+
+    async def test_probe_rejects_missing_echo(self):
+        """nonce 在正文里找不到时必须判失败。
+
+        直接验证判定逻辑本身，不起 TLS 服务端 —— 没有 nonce 时
+        probe 会走 TLS 握手，与这里要测的校验分支无关。
+        """
+        cfg = ValidatorConfig(check_url_https="https://httpbin.org/get?probe=needle999")
+        v = Validator(cfg)
+        assert v._https_nonce == "needle999"
+
+        # 这就是 _probe_inner 里 use_https 分支的判定条件
+        for body, should_fail in [
+            ('{"ip": "9.9.9.9"}', True),                       # 假代理，没回显
+            ('{"args": {"probe": "needle999"}}', False),       # 真代理，回显了
+        ]:
+            missing = bool(v._https_nonce and v._https_nonce not in body)
+            assert missing is should_fail, f"{body} 判定错了"

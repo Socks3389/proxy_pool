@@ -11,9 +11,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import logging
-import os
 import sys
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine

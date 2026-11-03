@@ -114,7 +114,32 @@ app = FastAPI(title="ProxyPool", version="1.0.0", lifespan=lifespan)
 
 # ---------------- 对外取代理 ----------------
 
-@app.get("/get", response_class=PlainTextResponse)
+async def _fetch_proxies(
+    n: int,
+    protocol: str | None = None,
+    anonymity: str | None = None,
+    https_only: bool = False,
+    max_latency: int | None = None,
+    min_score: int | None = None,
+    https_rate: float | None = None,
+) -> list[dict]:
+    """两个取代理路由共用的取数逻辑。
+
+    抽出来是为了避免路由互相调用 —— 直接调带 Query(...) 默认值的路由函数
+    不会经过 FastAPI 的参数解析，漏传的参数会保持 Query 对象，
+    后续比较直接 TypeError。
+    """
+    items = await state.store.get_batch(
+        min(n, state.cfg.api.max_batch), protocol=protocol, anonymity=anonymity,
+        https_only=https_only, max_latency=max_latency, min_score=min_score,
+        min_https_rate=https_rate,
+    )
+    if not items:
+        raise HTTPException(status_code=503, detail="池中暂无可用代理")
+    return items
+
+
+@app.get("/get")
 async def get_proxy(
     n: int = Query(1, ge=1, le=100, description="取几个"),
     protocol: str | None = Query(None, description="http/https/socks4/socks5"),
@@ -124,23 +149,18 @@ async def get_proxy(
     min_score: int | None = Query(None, ge=0, le=100, description="最低评分"),
     https_rate: float | None = Query(None, ge=0, le=1, description="HTTPS 实测通过率下限 0-1"),
     format: str = Query("json", description="json|text|list"),
-    unique: int = Query(1, ge=0, le=1, description="本次请求内去重"),
 ):
-    items = await state.store.get_batch(
-        min(n, state.cfg.api.max_batch), protocol=protocol, anonymity=anonymity,
-        https_only=bool(https), max_latency=max_latency, min_score=min_score,
-        min_https_rate=https_rate,
+    items = await _fetch_proxies(
+        n, protocol=protocol, anonymity=anonymity, https_only=bool(https),
+        max_latency=max_latency, min_score=min_score, https_rate=https_rate,
     )
-    if not items:
-        raise HTTPException(status_code=503, detail="池中暂无可用代理")
 
     if format == "text":
-        return "\n".join(f"{i['ip']}:{i['port']}" for i in items)
+        return PlainTextResponse("\n".join(f"{i['ip']}:{i['port']}" for i in items))
     if format == "list":
         return JSONResponse([i["url"] for i in items])
-    if n == 1:
-        return JSONResponse(items[0])
-    return JSONResponse({"count": len(items), "proxies": items})
+    # 统一结构：n=1 也返回数组，客户端不用写两套分支
+    return {"count": len(items), "proxies": items}
 
 
 @app.get("/get/{protocol}", response_class=PlainTextResponse)
@@ -151,7 +171,8 @@ async def get_proxy_by_protocol(
 ):
     if protocol not in ("http", "https", "socks4", "socks5"):
         raise HTTPException(status_code=400, detail="protocol 非法")
-    return await get_proxy(n=n, protocol=protocol, https=https, format="text")
+    items = await _fetch_proxies(n, protocol=protocol, https_only=bool(https))
+    return "\n".join(f"{i['ip']}:{i['port']}" for i in items)
 
 
 @app.get("/health")
@@ -232,16 +253,16 @@ async def api_latency():
 async def api_trigger(fetch: int = Query(1, ge=0, le=1)):
     if state.scheduler.running:
         return {"ok": False, "detail": "已有轮次在跑"}
-    state.cfg.scheduler.refetch_every_round = bool(fetch)
-    state.scheduler.trigger_now.set()
-    # 直接跑一轮（不阻塞在此，返回后异步执行）
-    asyncio.create_task(_run_once())
+    # 只影响这一次触发，不改动 cfg。
+    # 曾经直接写 state.cfg.scheduler.refetch_every_round，
+    # 调一次 ?fetch=0 之后所有定时轮都不再抓源，直到重启。
+    asyncio.create_task(_run_once(bool(fetch)))
     return {"ok": True, "detail": "已触发"}
 
 
-async def _run_once():
+async def _run_once(fetch: bool = True):
     try:
-        await state.scheduler.run_round()
+        await state.scheduler.run_round(hot_only=not fetch)
     except Exception:
         log.exception("手动触发轮次失败")
 

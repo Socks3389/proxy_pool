@@ -45,7 +45,6 @@ async def store(tmp_path):
         kill_consecutive_fail=3,
         ban_consecutive_fail=6,
         dead_cooldown=1800,
-        ban_cooldown=604800,
         score_up=12,
         score_down=30,
         score_max=100,
@@ -571,9 +570,34 @@ class TestCleanup:
         row = await _one(store)
         await store.apply_results([(row, ok_result())])
         async with store.sf() as s:
-            from sqlalchemy import select, update
+            from sqlalchemy import update
             from proxypool.models import CheckLog
             await s.execute(update(CheckLog).values(checked_at=utcnow() - dt.timedelta(days=10)))
             await s.commit()
         out = await store.cleanup()
         assert out["logs_deleted"] == 1
+
+
+class TestBannedFate:
+    async def test_banned_has_no_next_check(self, store):
+        """banned 不再复检，next_check_at 应留空。
+
+        曾经给它设 ban_cooldown（7 天），但 pick_for_check 根本不挑 banned，
+        这个值没有任何作用，只会误导后来人以为它会复活。
+        """
+        row = await _one(store)
+        for _ in range(6):                       # ban_consecutive_fail=6
+            await store.apply_results([(row, fail_result())])
+        async with store.sf() as s:
+            from sqlalchemy import select
+            p = (await s.execute(select(Proxy).where(Proxy.id == row["id"]))).scalars().one()
+            assert p.status == BANNED
+            assert p.next_check_at is None, "banned 不该有下次检查时间"
+
+    async def test_banned_never_picked(self, store):
+        """banned 永远不该被 pick_for_check 挑走。"""
+        row = await _one(store)
+        for _ in range(6):
+            await store.apply_results([(row, fail_result())])
+        picked = await store.pick_for_check(1000)
+        assert not [r for r in picked if r["status"] == BANNED]

@@ -1,12 +1,12 @@
 """调度器：每 N 秒一轮「抓取 → 验证 → 入库 → 清理」。
 
-为什么必须分级轮转（实测依据）：
-    全量 16660 条，并发 200、超时 8s 时单向验完需 11 分钟，超过 5 分钟周期。
-    硬塞进 5 分钟只有两个办法：降超时（会误杀，p99 延迟 7.9s）或抬并发（运营商限速反而更慢）。
-    所以采取轮转：每轮按优先级挑一批（默认 4000），保证轮次预算内跑完，全池在 3-4 轮内覆盖一遍。
-    效果等价于"5 分钟内持续验证"，同时不会因为跑不完而堆积。
+为什么要分级轮转：
+    全量 3.5 万条，并发 200、超时 8s 时验完要 11 分钟，塞不进 5 分钟周期。
+    硬塞只有两条路：降超时（会误杀，存活代理 p99 延迟 7.9s）或抬并发
+    （运营商限速，反而更慢）。所以改成轮转：每轮按优先级挑一批，
+    预算内跑完，全池分几轮覆盖。
 
-轮次预算控制：round_budget 到达后不再派发新任务，已派发的等它完成，记 notes 说明。
+预算：round_budget 到了就不再派新任务，已派发的等它跑完，记在 notes 里。
 """
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from dataclasses import dataclass
 
 from .fetcher import fetch_all
 from .models import utcnow
-from .store import ALIVE, Store
+from .store import Store
 from .validator import ProbeResult, Validator
 
 log = logging.getLogger("proxypool.scheduler")
@@ -49,10 +49,9 @@ class Scheduler:
         self.validator = validator
         self._task: asyncio.Task | None = None
         self._stop = asyncio.Event()
-        # 轮次互斥：防止手动触发与定时触发重入。
-        # 实测踩坑：不加锁时会出现同一时刻两轮并行，
-        # 后一轮 pick 拿到空列表（前一轮刚把所有 next_check_at 推到未来），
-        # 日志里出现一堆 "验证 0 条" 的空轮，白占一次周期。
+        # 轮次互斥，防止手动触发和定时触发撞在一起。
+        # 两轮并行时后一轮 pick 会拿到空列表（前一轮刚把 next_check_at 推到未来），
+        # 白占一次周期。
         self._round_lock = asyncio.Lock()
         self.last_report: RoundReport | None = None
         self.running = False
@@ -83,12 +82,13 @@ class Scheduler:
     async def _loop(self) -> None:
         """主循环：热池精检每轮都跑，冷池扩充按间隔穿插。
 
-        为什么这样分（实测依据）：
-        - 2 万多条 new 全量验证一遍要 5-14 分钟（取决于并发），塞不进 5 分钟周期
-        - 用高并发硬塞到 5 分钟会因拥塞误杀可用代理（并发 800 时存活率从 5.9% 掉到 1.7%）
-        - 而你真正关心的"每 5 分钟验证清理"针对的是在用的那批（alive+candidate，约 1500 条）
-        所以：每 300 秒精检一遍热池（实测 30-60 秒跑完，100% 覆盖），
-        每 N 轮做一次带抓取的常规扩充，两者互不挤占预算。
+        为什么分开：
+        - 两万多条 new 全验一遍要 5-14 分钟，塞不进 5 分钟
+        - 抬并发硬塞会因拥塞误杀好代理（并发 800 时存活率从 5.9% 掉到 1.7%）
+        - 「每 5 分钟验证清理」真正要覆盖的是在用的那批，alive + candidate 约 1500 条
+
+        所以每 300 秒精检一遍热池（30-60 秒跑完，100% 覆盖），
+        每 N 轮做一次带抓取的扩充，两边不抢预算。
         """
         refresh_every = max(1, self.cfg.scheduler.refresh_every_n_rounds)
         round_no = 0
@@ -109,44 +109,43 @@ class Scheduler:
             elapsed = time.monotonic() - t0
             wait = max(5.0, self.cfg.scheduler.interval - elapsed)
 
-            # 空轮处理：本轮一条都没验，且没有新增数据。
-            # 两种情况要分开：
-            #   a) 真正空轮（所有代理都没到期）→ 按最近到期时间重排，不要傻等满周期
-            #   b) 抓取轮（抓到新数据但没验证）→ 保持正常周期
-            # ⚠️ 这里必须用 due 直接覆盖 wait，不能写成 "due > wait 才改"：
-            # 实测空轮时 wait 是 300s（整周期），due 只有 9s，
-            # 用 "due > wait" 判断会永远为假，等于没修。
+            # 空轮且没抓到新数据时，按最近到期时间重排。
+            # 直接覆盖 wait，不要写成 "due > wait 才改"：
+            # 空轮时 wait 是整周期 300s、due 只有几秒，那个判断永远为假。
             if rep is not None and rep.checked == 0 and rep.fetched_new == 0:
                 due = await self.store.next_due_seconds()
                 if due is not None:
-                    # 下限 5s：due 可能因时钟抖动接近 0，不设下限会高频空转打满 CPU。
+                    # 下限 5s，due 接近 0 时会变成高频空转。
                     wait = max(5.0, min(due, self.cfg.scheduler.interval))
                     log.info("无待验证代理，等 %.0fs 到最近一个代理到期再跑", wait)
 
             log.info("本轮耗时 %.1fs，%.0fs 后开始下一轮", elapsed, wait)
             try:
                 await asyncio.wait_for(self.trigger_now.wait(), timeout=wait)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 pass
             self.trigger_now.clear()
 
     # ---------- 单轮 ----------
 
-    async def run_round(self, *, hot_only: bool = False) -> RoundReport:
+    async def run_round(self, *, hot_only: bool = False,
+                        fetch: bool | None = None) -> RoundReport:
         """跑一轮（带互斥，重入会直接返回空报告而不是并行跑）。
 
-        hot_only=True：只复检热池（alive + candidate），不做抓取。
-        这是满足"每 5 分钟验证清理一次"的主力轮次：热池约 1500 条，
-        按实测 50 条/秒可 30 秒跑完，300 秒周期绰绰有余，真正全量覆盖。
-        常规轮则负责抓新源、扩充冷池。
+        hot_only=True：只复检热池（alive + candidate），候选额度放宽到池子全量。
+        fetch：是否抓取源。None 表示按 hot_only 推断（常规轮抓，精检轮不抓），
+        显式传入时以它为准，供手动触发用。
         """
         if self._round_lock.locked():
             log.info("已有轮次在跑，本次触发跳过")
             return self.last_report or RoundReport(round_id=-1, notes="skipped: already running")
         async with self._round_lock:
-            return await self._run_round_inner(hot_only=hot_only)
+            return await self._run_round_inner(hot_only=hot_only, fetch=fetch)
 
-    async def _run_round_inner(self, *, hot_only: bool = False) -> RoundReport:
+    async def _run_round_inner(self, *, hot_only: bool = False,
+                               fetch: bool | None = None) -> RoundReport:
+        if fetch is None:
+            fetch = self.cfg.scheduler.refetch_every_round and not hot_only
         self.running = True
         self.round_started_at = utcnow()
         t_start = time.monotonic()
@@ -154,8 +153,8 @@ class Scheduler:
         rep = RoundReport(round_id=round_id)
 
         try:
-            # ---- 1. 抓取（精检轮跳过）----
-            if self.cfg.scheduler.refetch_every_round and not hot_only:
+            # ---- 1. 抓取 ----
+            if fetch:
                 t_fetch = time.monotonic()
                 results, entries = await fetch_all(self.cfg)
                 rep.fetched_sources = sum(1 for r in results if r.ok)
@@ -178,8 +177,7 @@ class Scheduler:
                 rep.truncated = True
             rows = await self.store.pick_for_check(pick_limit, hot_only=hot_only)
 
-            # 一条都没有：不是"跑了一轮什么都没干"，而是所有代理都还没到期。
-            # 明确记录到期时间，让调度循环能睡到点再跑（否则会白占一次周期）。
+            # 一条都没有，说明都还没到期。记下到期时间，让循环睡到点再跑。
             if not rows:
                 due = await self.store.next_due_seconds()
                 rep.notes = "无待验证代理" + (f"，{due:.0f}s 后到期" if due else "，库为空")
@@ -216,8 +214,7 @@ class Scheduler:
 
         finally:
             rep.duration_ms = int((time.monotonic() - t_start) * 1000)
-            # 空轮不写 round_stats：它不代表"跑了一轮"，写进去会让趋势图
-            # 出现一串验证量为 0 的点（实测新装后立即出现"验证 0 条"的空记录）。
+            # 空轮不写 round_stats，否则趋势图上会出现一串 0 点。
             if rep.checked > 0 or rep.fetched_new > 0:
                 await self.store.finish_round(round_id, {
                     "finished_at": utcnow(),
@@ -244,8 +241,8 @@ class Scheduler:
     async def _verify_batch(self, rows: list[dict], deadline: float):
         """并发验证一批代理，返回 (结果, https 结果, 实际完成数)。
 
-        预算控制要点：任务在 deadline 到达后主动放弃（不是等它跑完）。
-        用 asyncio.wait 带超时收集，超时部分直接丢弃并取消，保证轮次严格按时收尾。
+        到 deadline 就主动放弃剩余任务，不等它们跑完。
+        asyncio.wait 带超时收集，超时部分直接取消，保证轮次按时收尾。
         """
         results: list[tuple[dict, ProbeResult]] = []
         https_map: dict[int, ProbeResult] = {}
@@ -270,10 +267,10 @@ class Scheduler:
         checked = len(results)
 
         # HTTPS 能力探测。
-        # 覆盖 http/https（需要 CONNECT 支持，实测仅 16% 通过）和 socks5
-        # （协议天然支持隧穿，但实际吞吐/TLS 表现仍需实测，否则筛"支持 HTTPS"时
-        # 会把 206 条 socks5 全部排除，结果误导用户）。
-        # socks4 不做：它不支持域名解析，访问 443 目标天然失败，保持 false 是正确的。
+        # http/https 需要 CONNECT，实测只有 16% 通过。
+        # socks5 理论上能隧穿，但实际 TLS 表现要实测，否则筛 HTTPS 时
+        # 会把两百多条 socks5 全排除。
+        # socks4 不测：它不支持域名解析，访问 443 本来就会失败。
         if self.cfg.scheduler.fast_promote:
             need_https = [
                 row for row, res in results

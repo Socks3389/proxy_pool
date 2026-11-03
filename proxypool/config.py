@@ -1,8 +1,7 @@
-"""ProxyPool 配置加载。
+"""配置加载。
 
-设计要点：
-- 配置全部来自 config.yaml，代码里不写死任何阈值
-- 启动时校验必填项，缺配置立即失败（fail fast），不带错配置跑
+全部来自 config.yaml，代码里不写死阈值。启动时校验必填项，
+配置错了直接抛异常，不带着错配置跑。
 """
 from __future__ import annotations
 
@@ -24,9 +23,8 @@ class SourceConfig:
     url: str
     protocol: str = "http"
     enabled: bool = True
-    # 单源条数上限（0 = 用全局 fetcher.max_per_source）。
-    # 大源（如 openproxy 有 6 万条、存活率仅 4%）会淹没小源的高质量数据，
-    # 给它限流才能保留源头多样性。
+    # 单源条数上限，0 表示用全局 fetcher.max_per_source。
+    # 大源会淹掉小源的高质量数据，限流才能保住源头多样性。
     max_per_source: int = 0
 
 
@@ -44,7 +42,7 @@ class ValidatorConfig:
     concurrency: int = 200
     timeout: float = 8.0
     check_url_http: str = "http://httpbin.org/get"
-    check_url_https: str = "https://api.ipify.org?format=json"
+    check_url_https: str = "https://httpbin.org/get?probe=proxypool"
     attempts: int = 2
     retry_delay: float = 0.4
 
@@ -55,7 +53,6 @@ class PolicyConfig:
     kill_consecutive_fail: int = 2
     ban_consecutive_fail: int = 8
     dead_cooldown: int = 0
-    ban_cooldown: int = 604800
     score_up: int = 2
     score_down: int = 30
     score_max: int = 100
@@ -79,21 +76,20 @@ class CleanupConfig:
     log_retention_days: int = 3
     stale_hours: int = 48
     max_rows: int = 200000
-    # 冷池上限（new + candidate）。超过时按 score 淘汰最差的。
-    # 实测依据：免费源每轮能抓 2 万条，但单次存活率只有 11-18%，
-    # 其中绝大多数是从没活过的死地址。全部保留会让每轮预算被死数据吃掉，
-    # 活着的那批反而轮不到复检。上限控制在有希望的范围内才跑得动。
+    # 冷池上限（new + candidate），超过就淘汰最差的。
+    # 每轮能抓两万条，但单次存活率只有 11-18%，其余全是从没活过的地址。
+    # 全留着会让死数据吃掉每轮预算，活着的反而轮不到复检。
     cold_pool_limit: int = 15000
-    # dead 真清阈值：连续失败达 N 次、且最后一次检查已过 N 秒，直接从库删除。
-    # 不留着"冷却重测"，因为实测会造成无限循环（3 万条死代理反复回炉，库无限膨胀）。
+    # dead 清理阈值：连续失败达 N 次且最后一次检查已过 N 秒，直接删。
+    # 不做冷却重测，那会造成死循环（几万条死代理反复回炉，库只涨不跌）。
     dead_purge_min_fails: int = 2
     dead_purge_seconds: int = 60
-    # banned 的保留时长：ban_cooldown 是"不再重测"，不是"永久保留"。
+    # banned 的保留时长：banned 不复检，这个值就是它从拉到删的寿命。
     # 实测一天会累积上千条，超过此期限直接删库。
     banned_retention_seconds: int = 86400
-    # 墓碑有效期：判死的代理在这段时间内不再被重新抓取入库。
-    # 防止「失败→判死→删除→重新抓取→再验证」的死循环（实测一次重新灌入 13809 条）。
-    # 6 小时是折中：免费代理极少在 6 小时内复活，同时不至于永久拉黑误杀。
+    # 墓碑有效期：判死的代理在这段时间内不再重新入库，
+    # 防止「验死→删除→重抓→再验」的死循环。
+    # 6 小时是折中：免费代理很少在 6 小时内复活，也不至于永久误杀。
     tombstone_seconds: int = 21600
     # 每轮清理后做一次 WAL checkpoint（仅 sqlite），避免 WAL 无限增长
     wal_checkpoint: bool = True
@@ -101,8 +97,7 @@ class CleanupConfig:
 
 @dataclass
 class ApiConfig:
-    # 默认 0.0.0.0：127.0.0.1 会让局域网/其他机器连不上，
-    # 这是踩过的坑（用户拿到地址却打不开）。
+    # 默认 0.0.0.0，绑 127.0.0.1 的话局域网和其他机器都连不上。
     host: str = "0.0.0.0"
     port: int = 8088
     admin_token: str = ""

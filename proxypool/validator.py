@@ -1,14 +1,13 @@
-"""代理探测引擎：自建 asyncio raw-socket，不依赖 httpx。
+"""代理探测引擎：自建 asyncio raw socket，不用 httpx。
 
-为什么不用 httpx/requests：
-实测 httpx 通过代理时对部分代理不遵守 timeout，一批 400 条探测能挂死 5 分钟以上不返回，
-导致整轮调度被拖死。raw socket + asyncio.wait_for 是唯一能保证硬超时的做法。
+为什么不用 httpx/requests：它们通过代理时不保证遵守 timeout，
+一批 400 条探测能挂住 5 分钟不返回，整轮调度跟着卡死。
+raw socket 配 asyncio.wait_for 才能硬超时。
 
-为什么分两级探测：
-- 明文探测（http://httpbin.org/get）：拿 origin 和全部请求头，判匿名性最准，成本最低
-  实测单次存活率 11%，全量 16660 条约 11 分钟
-- HTTPS 探测（CONNECT + TLS）：实测只有 16% 的 HTTP 代理支持 CONNECT
-  对不支持者直接打标记跳过（降级标记为仅 HTTP 可用）
+两级探测：
+- 明文（http://httpbin.org/get）：拿 origin 和请求头判匿名性，成本最低
+- HTTPS（CONNECT + TLS）：只有约 16% 的 HTTP 代理支持 CONNECT，
+  不支持的打标降级成仅 HTTP 可用
 """
 from __future__ import annotations
 
@@ -55,7 +54,7 @@ class ProbeResult:
     leak_headers: list[str] = field(default_factory=list)
     error: str | None = None
     stage: str = ""
-    # 失败原因是目标站限流/抽风，不是代理的问题 —— 这种不该计入代理的失败次数
+    # 目标站限流或抽风，不是代理的问题，不计入代理的失败次数
     target_throttled: bool = False
 
     def errors_short(self) -> str:
@@ -109,10 +108,10 @@ def judge_anonymity(
     proxy_ip: str,
     real_ip: str | None,
 ) -> tuple[Anon, list[str]]:
-    """匿名性分级（依据实测行为标定）。
+    """匿名性分级。
 
-    elite       出口只有一个 IP 且就是代理自己，无泄漏头
-    anonymous   出口是别的 IP（多级跳转）或有代理特征头，但没看到我们的真实 IP
+    elite       出口只有代理自己一个 IP，无泄漏头
+    anonymous   出口是别的 IP（多级跳转），或有代理特征头，但没暴露我们的真实 IP
     transparent 出口链或请求头里出现了我们的真实 IP
     """
     leaks = [h for h in LEAK_HEADERS if h in headers]
@@ -185,6 +184,12 @@ def _status_code(status_line: str) -> int:
 
 
 def _make_ssl_ctx() -> ssl.SSLContext:
+    """探测用的 TLS 上下文，不校验证书。
+
+    免费代理大量存在 TLS 中间人（实测常见 self-signed certificate in
+    certificate chain），校验证书会让绝大多数可用代理被判死。
+    这里只判断「能不能建立 TLS 并取回数据」，不判断链路可信不可信。
+    """
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
@@ -242,6 +247,7 @@ class Validator:
         self._ssl = _make_ssl_ctx()
         self._http_targets = self._parse_target(cfg.check_url_http)
         self._https_targets = self._parse_target(cfg.check_url_https)
+        self._https_nonce = self._probe_nonce(self._https_targets[2])
 
     @staticmethod
     def _parse_target(url: str) -> tuple[str, int, str, bool]:
@@ -258,6 +264,22 @@ class Validator:
         if not is_tls and "://" in url and url.split("://")[0].lower() not in ("http", ""):
             raise ValueError(f"明文检查地址必须是 http://，实际 {url}")
         return sp.hostname, port, path, is_tls
+
+    @staticmethod
+    def _probe_nonce(path: str) -> str:
+        """从探测地址的 query 里取一个必须出现在响应体中的串。
+
+        HTTPS 探测不能只看状态码：实测有代理 CONNECT 任何目标都返回自己的 IP
+        （一个合法的 JSON），只看 200 会把这种假代理判成支持 HTTPS。
+        用探测地址里的唯一参数做呼应校验，回显了才算通。
+        """
+        from urllib.parse import parse_qs, urlsplit
+
+        q = parse_qs(urlsplit(path).query)
+        for key in ("probe", "token", "nonce"):
+            if q.get(key):
+                return q[key][0]
+        return ""
 
     async def probe(self, protocol: str, ip: str, port: int,
                     *, use_https: bool = False, read_body: bool = True) -> ProbeResult:
@@ -327,8 +349,8 @@ class Validator:
                 code = _status_code(status_line)
                 if code != 200:
                     res.error = f"status_{code or 'bad'}"
-                    # 429/409/5xx 是探测目标站自己限流或抽风，不能算代理的错。
-                    # 实测：httpbin.org 在高并发下会返回 429/409，若不区分会把可用代理误判失败。
+                    # 429/409/5xx 是目标站自己限流，不算代理的错。
+                    # httpbin.org 在高并发下会返回 429/409，不区分就会误判可用代理。
                     res.target_throttled = code in (429, 409, 500, 502, 503, 504)
                     return
 
@@ -338,6 +360,11 @@ class Validator:
 
                 text = body.decode("utf-8", "replace")
                 if use_https:
+                    # 有 nonce 时必须回显，否则视为假代理。
+                    # 只看状态码会被「CONNECT 啥都返回自己 IP」的代理骗过。
+                    if self._https_nonce and self._https_nonce not in text:
+                        res.error = "no_echo"
+                        return
                     m = re.search(r'"ip"\s*:\s*"([0-9a-fA-F:.]+)"', text)
                     if not m:
                         m = re.search(r"([0-9]{1,3}(?:\.[0-9]{1,3}){3})", text)
@@ -365,7 +392,7 @@ class Validator:
 
         try:
             await asyncio.wait_for(run(), timeout=self.cfg.timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             res.error = res.error or "timeout"
         except asyncio.IncompleteReadError:
             res.error = "short_read"
@@ -383,10 +410,9 @@ class Validator:
         return res
 
     async def verify(self, protocol: str, ip: str, port: int) -> ProbeResult:
-        """完整验证：明文判存活+匿名性，再按需探 HTTPS 能力。
+        """完整验证：明文判定存活和匿名性，HTTPS 能力由二级探测补。
 
-        返回的 ProbeResult 以明文探测为主，supports_https 由二级探测补充。
-        同一轮内重试 attempts 次，能救回抖动代理（实测第一轮存活率 11%，重试后显著上升）。
+        同一轮内重试 attempts 次，能救回抖动的代理。
         """
         attempts = max(1, self.cfg.attempts)
         last = ProbeResult(error="no_attempt")

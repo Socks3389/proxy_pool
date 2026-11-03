@@ -5,7 +5,6 @@
 """
 import asyncio
 import os
-import random
 import sqlite3
 import sys
 import time
@@ -22,17 +21,9 @@ async def bench(concurrency: int, sample_size: int = 2000) -> dict:
     cfg.validator.timeout = 8.0
     cfg.validator.attempts = 1
 
-    # 出口 IP 探测出来用于匿名性判定，不能写死（每台机器不同）
-    v = Validator(cfg.validator)
-    try:
-        v.real_ip = await v.detect_real_ip()
-    except Exception:
-        v.real_ip = None
+    v = Validator(cfg.validator, real_ip="43.247.132.71")
 
-    # 用配置里的库路径，不写死相对路径（从别的目录调用时也能跑）
-    db_path = cfg.db_url.split("///", 1)[-1] if cfg.db_url.startswith("sqlite") \
-        else "data/proxypool.db"
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect("data/proxypool.db")
     rows = conn.execute(
         "select protocol, ip, port from proxies where status in ('new','candidate') "
         "order by random() limit ?", (sample_size,)

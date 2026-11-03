@@ -5,7 +5,6 @@
 import asyncio
 import time
 
-import pytest
 
 from proxypool.config import Config, SchedulerConfig
 from proxypool.scheduler import Scheduler

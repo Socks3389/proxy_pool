@@ -1,9 +1,8 @@
 """代理源抓取与解析。
 
-设计要点：
-- 一个源失败不影响整体（这是免费源的日常，实测 6 个源里常有 1-2 个 5xx）
-- 解析统一走正则 + 协议归一化，能吃掉纯 ip:port、scheme://ip:port、ip:port:COUNTRY 三种格式
-- 单源条数上限保护，防止异常大响应拖垮内存
+单个源失败不影响整体，免费源常有几个挂掉。解析用正则加协议归一化，
+能吃纯 ip:port、scheme://ip:port、ip:port:COUNTRY 三种格式。
+单源有条数上限，防异常大的响应把内存拖垮。
 """
 from __future__ import annotations
 

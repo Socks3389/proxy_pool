@@ -1,20 +1,16 @@
 """入库与状态机。
 
-核心职责：
-1. upsert 抓到的代理（批量，冲突即忽略，只累加 source_count）
-2. 按验证结果推进状态机并更新健康分
-3. 挑出本轮该验证的代理（分优先级，保证轮次预算内覆盖最有价值的）
-4. 清理过期数据
+负责四件事：upsert 抓到的代理、按验证结果推进状态、挑本轮要验的、清理过期数据。
 
-批量写策略：使用 SQLite 的 INSERT ... ON CONFLICT DO UPDATE，
-避免"逐条 select + insert"导致的 N 次往返（实测 1.6 万条逐条写要 40 秒以上）。
+批量写用 INSERT ... ON CONFLICT DO UPDATE，不走「逐条 select 再 insert」。
+后者 1.6 万条要 40 秒以上。
 """
 from __future__ import annotations
 
 import datetime as dt
 import json
 import logging
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 
 from sqlalchemy import delete, func, insert, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -42,16 +38,13 @@ class Store:
     # ---------------- 写入 ----------------
 
     async def upsert_many(self, entries: Sequence[tuple[str, str, int]], source_name: str) -> int:
-        """批量插入新代理。已存在的只累加 source_count，返回新增条数。
+        """批量插入新代理，返回真正新增的条数；已存在的只把 source_count 加一。
 
-        注意 1：不能用 RETURNING 统计新增数。
-        SQLite 的 ON CONFLICT DO UPDATE ... RETURNING 会连被更新的行一起返回，
-        导致"重复条目"被算成新增（测试 test_dedup_on_identity 抓到的真实 bug）。
+        不能用 RETURNING 统计新增：SQLite 的 ON CONFLICT DO UPDATE ... RETURNING
+        会把被更新的行也返回，重复条目就被算成新增。
 
-        注意 2：必须过滤墓碑。
-        purge 删掉 dead 后，源会把同一批代理重新吐出来，若不拦就会出现
-        「验证失败 → 判死 → 删除 → 重新抓取 → 再验证」的死循环
-        （实测一次新增 13809 条全是刚删的）。
+        插入前先按墓碑过滤。purge 删掉 dead 之后源会把同一批地址再吐回来，
+        不拦就会出现「验死 → 删除 → 重抓 → 再验」的死循环。
         """
         if not entries:
             return 0
@@ -129,18 +122,18 @@ class Store:
     async def pick_for_check(self, limit: int, *, hot_only: bool = False) -> list[dict]:
         """挑本轮要验证的代理，按价值排序。
 
-        排序原则（每一条都是实测踩坑换来的）：
-        1. alive 到期 —— 最高优先，池子的可信度全靠这个
-        2. candidate 且失败次数少的 —— 有复活希望，优先救
-        3. new —— 扩充池子（只在不做精检时）
-        4. dead 冷却到期 —— 少量探活
+        优先级：
+        1. alive 且没测过 HTTPS 的 —— 补上能力标记
+        2. alive 到期复验
+        3. candidate 里失败次数少的 —— 有复活希望
+        4. new —— 扩充池子，仅常规轮
 
-        关键教训：
-        a) candidate 里已经失败 2 次的必须排到最后，否则 1.5 万条"准僵尸"
-           会把每轮预算吃光，新鲜的 candidate 永远轮不到。
-        b) new 的配额必须封顶。2 万条 new 永远抽不完，
-           会把 alive 和 candidate 的复验预算挤成 0，淘汰机制形同虚设。
-        c) hot_only=True 只挑 alive/candidate，供 5 分钟精检轮使用。
+        几个配额是有原因的：
+        - candidate 失败 2 次以上的排后面。否则上万条准僵尸会吃光预算，
+          新鲜的 candidate 永远轮不到。
+        - new 的额度要封顶。2 万条 new 抽不完，会把 alive 的复验预算挤成 0，
+          淘汰机制就失效了。
+        - hot_only=True 只挑 alive 和 candidate，给 5 分钟精检轮用。
         """
         now = utcnow()
         out: list[dict] = []
@@ -154,11 +147,10 @@ class Store:
                     out.append(d)
 
         async with self.sf() as s:
-            # 1) alive 且从未测过 HTTPS 的：优先补测。
-            # 实测踩坑：877 条 alive 代理 https_try_count=0，导致
-            # "只取支持 HTTPS"返回的集合不可靠。这批必须先补上位。
-            # socks5 也纳入：它天然支持隧穿，但不实测就没法标支持，
-            # 会让"支持 HTTPS"筛选把 200+ 条 socks5 全排除。
+            # 1) alive 但没测过 HTTPS 的，优先补测。
+            # 漏了这批，"只要 HTTPS"筛出来的结果就不可信。
+            # socks5 也要测：它本来就能隧穿，不实测就标不上支持，
+            # 筛 HTTPS 时会把两百多条 socks5 全排除掉。
             quota_untested = int(limit * 0.25)
             rows = await s.execute(
                 select(Proxy.id, Proxy.protocol, Proxy.ip, Proxy.port, Proxy.status)
@@ -205,10 +197,9 @@ class Store:
                         .limit(remain)
                     )
                     _add(rows)
-            # 注意：不再从 dead 里挑重测。
-            # 实测：给 dead 留 20% 配额会让 3 万条死代理每轮吃掉几百条预算，
-            # 而它们几乎从不复活（实测存活率 <2%），清理直接删掉更划算。
-            # dead 只在 ban 阈值前短暂存在，由 cleanup 的 dead_purged 收走。
+            # dead 不参与重测。给它们留 20% 配额的话，
+            # 几万条死地址每轮吃掉几百条预算，而复活率不到 2%。
+            # dead 只在到达 ban 阈值前短暂存在，之后由 cleanup 收走。
         return out
 
     async def hot_pool_size(self) -> int:
@@ -221,10 +212,9 @@ class Store:
     async def next_due_seconds(self) -> float | None:
         """距离最近一个待验证代理到期还有多少秒，没有则返回 None。
 
-        用途：避免"空轮"。
-        实测缺陷：冷池扩充轮耗时 247s，新晋升代理的 next_check_at 是 now+300s，
-        下一轮只等了 53s 就开始，此时没有任何代理到期 → 验证 0 条的空轮，
-        白白消耗一次调度周期（日志里表现为连续出现 "验证 0 条"）。
+        调度器用它避开空轮：扩充轮跑 247s 时，新晋升代理的 next_check_at
+        是那轮开始 +300s，下一轮只等 53s 就开始，到点时没有任何代理到期，
+        于是白跑一个验证 0 条的空轮。
         """
         now = utcnow()
         async with self.sf() as s:
@@ -295,8 +285,8 @@ class Store:
                         if hr.ok:
                             p.https_ok_count += 1
                             p.supports_https = True
-                            # HTTPS 能力稀缺（实测 HTTP 代理里只有 16% 支持 CONNECT），
-                            # 必须给它额外加分，否则纯 HTTP 代理会靠低延迟挤占排序前排。
+                            # HTTPS 能力稀缺（HTTP 代理里只有 16% 支持 CONNECT），
+                            # 额外加分，否则纯 HTTP 代理会靠低延迟挤到排序前排。
                             p.score = min(pol.score_max, p.score + 6)
                         # 通过率低于 1/3 时撤销 HTTPS 标记，避免给爬虫一个不可靠的承诺
                         elif p.https_try_count >= 3 and p.https_ok_count * 3 < p.https_try_count:
@@ -337,7 +327,8 @@ class Store:
                         if p.status != BANNED:
                             stats["banned"] += 1
                             p.status = BANNED
-                        p.next_check_at = now + dt.timedelta(seconds=pol.ban_cooldown)
+                        # banned 不再复检，next_check_at 无意义，留空。
+                        p.next_check_at = None
                     elif p.consecutive_fail >= pol.kill_consecutive_fail:
                         if p.status != DEAD:
                             stats["killed"] += 1
@@ -345,18 +336,18 @@ class Store:
                         p.next_check_at = now + dt.timedelta(seconds=pol.dead_cooldown)
                     elif was_status in (DEAD, BANNED):
                         # 已下线的代理本次仍失败：继续尊重原冷却期。
-                        # 但反复失败（dead 状态下已经是第 N 次）必须加速出局，
-                        # 否则 3 万条死代理每次冷却到期都回来消耗预算，
-                        # 永远在 dead↔candidate 之间循环，库存无限膨胀。
+                        # 但反复失败（dead 状态下已经是第 N 次）要加速出局，
+                        # 否则几条死代理每次冷却到期都回来消耗预算，
+                        # 在 dead 和 candidate 之间无限循环。
                         if p.consecutive_fail >= pol.ban_consecutive_fail:
                             if p.status != BANNED:
                                 stats["banned"] += 1
                                 p.status = BANNED
-                            p.next_check_at = now + dt.timedelta(seconds=pol.ban_cooldown)
+                            p.next_check_at = None
+                        elif was_status == DEAD:
+                            p.next_check_at = now + dt.timedelta(seconds=pol.dead_cooldown)
                         else:
-                            p.next_check_at = now + dt.timedelta(
-                                seconds=pol.dead_cooldown if was_status == DEAD else pol.ban_cooldown
-                            )
+                            p.next_check_at = None
                     else:
                         p.status = CANDIDATE if was_status in (NEW, CANDIDATE) else was_status
                         # 抖动代理：退避复验，避免每轮都浪费预算在它身上
@@ -411,9 +402,9 @@ class Store:
                         min_https_rate: float | None = None) -> list[dict]:
         """取一批可用代理，按 score 与延迟排序。
 
-        min_https_rate：只要 HTTPS 实测通过率 ≥ 该值的（0-1）。
-        比 supports_https 布尔标记可靠得多——实测同一代理 TLS 通过率波动大，
-        布尔值要么过于激进（一次成功就标 true）要么过于保守。
+        min_https_rate：只返回 HTTPS 实测通过率 ≥ 该值的代理（0-1）。
+        比 supports_https 布尔标记可靠：同一个代理的 TLS 通过率波动很大，
+        一次成功就标 true 太激进，全成功才算又太保守。
         """
         async with self.sf() as s:
             q = select(Proxy).where(Proxy.status == ALIVE)
@@ -434,10 +425,9 @@ class Store:
                     Proxy.https_ok_count * 100 >= int(min_https_rate * 100) * Proxy.https_try_count
                 )
             q = q.order_by(
-                # 排序必须优先考虑 HTTPS 能力，而不是只看 score。
-                # 实测踩坑：纯 score 排序会把"score=100 但只支持 HTTP"的代理排最前，
-                # 用 HTTPS 抓取的爬虫拿到 10 个全废（实测可用率仅 10%）。
-                # 加上 https_try_count=0 的也算不可靠（还没标定），一起压后。
+                # HTTPS 能力排在 score 前面。只按 score 排的话，
+                # 满分但只支持 HTTP 的代理会占据前排，
+                # 用 HTTPS 抓取的爬虫拿十个全废。
                 Proxy.supports_https.desc(),
                 Proxy.score.desc(),
                 Proxy.latency_avg_ms.asc().nullslast(),
@@ -685,8 +675,7 @@ class Store:
             r = await s.execute(delete(Tombstone).where(Tombstone.died_at < tomb_cut))
             out["tomb_cleared"] = r.rowcount or 0
 
-            # banned 也要清：ban_cooldown 是"不再重测"的时长，不是"永久保留"。
-            # 实测跑一天会累积上千条，白占库空间。超过保留期直接删。
+            # banned 不复检，超过保留期直接删。实测一天攒上千条。
             ban_cut = now - dt.timedelta(seconds=cl.banned_retention_seconds)
             r = await s.execute(
                 delete(Proxy)
@@ -695,11 +684,9 @@ class Store:
             )
             out["banned_purged"] = r.rowcount or 0
 
-            # 冷池上限：超过 cap 就淘汰最差的。
-            # 关键：只淘汰 NEW，绝不碰 CANDIDATE。
-            # 实测踩坑：把 candidate 也算进淘汰范围会误删有复活希望的代理
-            # （candidate 是验证过、只失败 1 次的那批，价值高于从没活过的 new），
-            # 结果 candidate 被清成 0，淘汰机制失去意义。
+            # 冷池上限：超过就淘汰最差的。
+            # 只淘汰 NEW，不碰 CANDIDATE —— candidate 是验证过、只失败一次的，
+            # 比从没活过的 new 值钱。混在一起淘汰会把 candidate 清成 0。
             cold = (await s.execute(
                 select(func.count()).select_from(Proxy).where(Proxy.status == NEW)
             )).scalar_one()
@@ -733,9 +720,9 @@ class Store:
                     out["overflow_deleted"] = r.rowcount or 0
             await s.commit()
 
-            # WAL checkpoint + 必要时 VACUUM。
-            # SQLite 删行只标记空闲页、不缩文件（实测删 3 万行后文件仍 29MB，
-            # 空闲页占 31%）。空闲页超过阈值时做一次 VACUUM 真正回收磁盘。
+            # WAL checkpoint，空闲页多时再做 VACUUM。
+            # SQLite 删行只标记空闲页、不缩文件，删三万行后文件还是 29MB。
+            # 空闲页超过 20% 才 VACUUM，太频繁会拖慢整轮。
             if self._is_sqlite:
                 try:
                     if cl.wal_checkpoint:
@@ -751,16 +738,6 @@ class Store:
                 except Exception as e:  # noqa: BLE001 - 维护失败不该影响清理
                     log.warning("WAL checkpoint / VACUUM 失败: %s", e)
         return out
-
-    async def prune_dead_forever(self, keep_days: int = 7) -> int:
-        """banned 且持久失败的彻底删除，避免无限膨胀。"""
-        cut = utcnow() - dt.timedelta(days=keep_days)
-        async with self.sf() as s:
-            r = await s.execute(
-                delete(Proxy).where(Proxy.status == BANNED).where(Proxy.updated_at < cut)
-            )
-            await s.commit()
-            return r.rowcount or 0
 
     # ---------------- 轮次 ----------------
 
@@ -781,8 +758,8 @@ class Store:
     async def discard_round(self, round_id: int) -> None:
         """丢弃空轮记录。
 
-        空轮（一条都没验）不该留在 round_stats 里：趋势图会多出一串 0 点，
-        让人误以为系统在空转。实测新装后立刻出现这种情况。
+        一条都没验的轮次留在 round_stats 里，趋势图会多出一串 0 点，
+        看着像系统在空转。
         """
         async with self.sf() as s:
             await s.execute(delete(RoundStat).where(RoundStat.id == round_id))
