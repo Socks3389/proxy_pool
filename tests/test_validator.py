@@ -319,8 +319,7 @@ class TestThrottleClassification:
                 writer.close()
                 return
             writer.write(
-                ("HTTP/1.1 %d X\r\nContent-Length: %d\r\n\r\n" % (code, len(body))).encode()
-                + body
+                f"HTTP/1.1 {code} X\r\nContent-Length: {len(body)}\r\n\r\n".encode() + body
             )
             await writer.drain()
             writer.close()
