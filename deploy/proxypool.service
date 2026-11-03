@@ -1,0 +1,43 @@
+[Unit]
+Description=ProxyPool - free proxy pool with validation
+Documentation=file://__APP_DIR__/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# 由 deploy/manage.sh 安装时自动替换成实际用户与路径
+User=__RUN_USER__
+Group=__RUN_GROUP__
+WorkingDirectory=__APP_DIR__
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONNOUSERSITE=1
+# 清掉外部注入的 PYTHONPATH，否则会加载到错误 venv 的包
+Environment=PYTHONPATH=
+ExecStart=__APP_DIR__/.venv/bin/python -m proxypool serve
+Restart=always
+RestartSec=10
+
+# 并发 400 时每个探测占 2-3 个文件描述符，默认 4096 会撞上限报 EMFILE
+# （表现为大量莫名 OSError）。程序启动时也会自动提升，但 systemd 下显式配置更可靠。
+LimitNOFILE=65535
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=proxypool
+
+# 安全加固。
+# ⚠️ ProtectHome=read-only 会挡住家目录下的路径写入，
+# 若项目部署在 /home/xxx 下，manage.sh 会自动改成 false 以免服务起不来。
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=__PROTECT_HOME__
+ReadWritePaths=__APP_DIR__/data
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

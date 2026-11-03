@@ -1,0 +1,279 @@
+# ============================================================
+# ProxyPool 配置文件
+# 数值全部基于实测标定，改动前先读 README「参数标定依据」
+# ============================================================
+
+# ---------- 数据库 ----------
+database:
+  # 支持 sqlite 与 postgresql 两种写法
+  #   sqlite:     sqlite+aiosqlite:///./data/proxypool.db
+  #   postgresql: postgresql+asyncpg://user:pass@127.0.0.1:5432/proxypool
+  url: "sqlite+aiosqlite:///./data/proxypool.db"
+  echo: false
+  pool_size: 10            # 仅 postgresql 生效
+
+# ---------- 抓取 ----------
+fetcher:
+  concurrency: 20          # 源抓取并发（源少，不需要大）
+  timeout: 25              # 单源超时秒
+  retries: 2               # 单源失败重试次数
+  max_per_source: 50000    # 单源解析上限，防异常大文件拖垮内存
+  # 数据源列表。enabled=false 可临时停用，无需删条目
+  sources:
+    - name: speedx-http
+      url: "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt"
+      protocol: http
+      enabled: true
+    - name: speedx-socks4
+      url: "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks4.txt"
+      protocol: socks4
+      enabled: true
+    - name: speedx-socks5
+      url: "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks5.txt"
+      protocol: socks5
+      enabled: true
+    - name: monosans-http
+      url: "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt"
+      protocol: http
+      enabled: true
+    - name: monosans-socks4
+      url: "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks4.txt"
+      protocol: socks4
+      enabled: true
+    - name: monosans-socks5
+      url: "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt"
+      protocol: socks5
+      enabled: true
+    - name: proxifly-all
+      url: "https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/all/data.txt"
+      protocol: mixed
+      enabled: true
+    - name: proxyscrape-http
+      url: "https://api.proxyscrape.com/v2/?request=getproxies&protocol=http&timeout=10000&country=all&ssl=all&anonymity=all"
+      protocol: http
+      enabled: true
+    - name: proxyscrape-socks5
+      url: "https://api.proxyscrape.com/v2/?request=getproxies&protocol=socks5&timeout=10000&country=all&ssl=all&anonymity=all"
+      protocol: socks5
+      enabled: true
+    - name: hideipme-http
+      url: "https://raw.githubusercontent.com/zloi-user/hideip.me/main/http.txt"
+      protocol: http
+      enabled: true
+    - name: hideipme-socks5
+      url: "https://raw.githubusercontent.com/zloi-user/hideip.me/main/socks5.txt"
+      protocol: socks5
+      enabled: true
+    - name: openproxy-space
+      url: "https://raw.githubusercontent.com/roosterkid/openproxylist/main/HTTPS_RAW.txt"
+      protocol: http
+      enabled: false
+    # --- 第二批（实测存活率后加入，2026-11-03）---
+    # 加源依据：各源随机抽 300 条实测存活率，0% 的直接排除不要。
+    #   iplocate-socks5 12.7% | proxifly-http 5.3% | hookzof-socks5 5.0%
+    #   openproxy-http 4.0%  | openproxy-socks5 3.0% | vakhov-http 2.0%
+    #   shiftytr-socks4 0% / clarketm 0% → 已排除，别加
+    - name: iplocate-socks5
+      url: "https://raw.githubusercontent.com/iplocate/free-proxy-list/main/protocols/socks5.txt"
+      protocol: socks5
+      enabled: true
+    - name: iplocate-http
+      url: "https://raw.githubusercontent.com/iplocate/free-proxy-list/main/protocols/http.txt"
+      protocol: http
+      enabled: true
+    - name: proxifly-http
+      url: "https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/http/data.txt"
+      protocol: http
+      enabled: true
+    - name: proxifly-socks5
+      url: "https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/socks5/data.txt"
+      protocol: socks5
+      enabled: true
+    - name: hookzof-socks5
+      url: "https://raw.githubusercontent.com/hookzof/socks5_list/master/proxy.txt"
+      protocol: socks5
+      enabled: true
+    # openproxy 两源合计 9.4 万条，是最大的池子；存活率 3-4% 不算高，
+    # 但绝对数量可观。用 max_per_source 限流，避免单源淹没其他源。
+    - name: openproxy-http
+      url: "https://raw.githubusercontent.com/ErcinDedeoglu/proxies/main/proxies/http.txt"
+      protocol: http
+      enabled: true
+      max_per_source: 15000
+    - name: openproxy-socks5
+      url: "https://raw.githubusercontent.com/ErcinDedeoglu/proxies/main/proxies/socks5.txt"
+      protocol: socks5
+      enabled: true
+      max_per_source: 10000
+    - name: vakhov-http
+      url: "https://raw.githubusercontent.com/vakhov/fresh-proxy-list/master/http.txt"
+      protocol: http
+      enabled: true
+    - name: vakhov-socks5
+      url: "https://raw.githubusercontent.com/vakhov/fresh-proxy-list/master/socks5.txt"
+      protocol: socks5
+      enabled: true
+    - name: mmpx12-http
+      url: "https://raw.githubusercontent.com/mmpx12/proxy-list/master/http.txt"
+      protocol: http
+      enabled: true
+    - name: mmpx12-socks5
+      url: "https://raw.githubusercontent.com/mmpx12/proxy-list/master/socks5.txt"
+      protocol: socks5
+      enabled: true
+    - name: shiftytr-http
+      url: "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/http.txt"
+      protocol: http
+      enabled: true
+    - name: shiftytr-socks5
+      url: "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/socks5.txt"
+      protocol: socks5
+      enabled: true
+    - name: prxchk-http
+      url: "https://raw.githubusercontent.com/prxchk/proxy-list/main/http.txt"
+      protocol: http
+      enabled: true
+    - name: prxchk-socks5
+      url: "https://raw.githubusercontent.com/prxchk/proxy-list/main/socks5.txt"
+      protocol: socks5
+      enabled: true
+    - name: roosterkid-https
+      url: "https://raw.githubusercontent.com/roosterkid/openproxylist/main/HTTPS_RAW.txt"
+      protocol: http
+      enabled: true
+    - name: roosterkid-socks5
+      url: "https://raw.githubusercontent.com/roosterkid/openproxylist/main/SOCKS5_RAW.txt"
+      protocol: socks5
+      enabled: true
+    - name: hideipme-socks4
+      url: "https://raw.githubusercontent.com/zloi-user/hideip.me/main/socks4.txt"
+      protocol: socks4
+      enabled: true
+    # 明文站点代理，抓取成功率不稳定，默认关闭
+    - name: proxyscrape-html
+      url: "https://www.proxy-list.download/api/v1/get?type=socks5"
+      protocol: socks5
+      enabled: false
+
+# ---------- 验证 ----------
+validator:
+  # 并发度。实测（本机 24 核 / 香港出网，2000 条随机样本）：
+  #   并发 200 → 30.7 条/秒，存活率 5.9%
+  #   并发 400 → 50.0 条/秒，存活率 3.8%
+  #   并发 600 → 67.9 条/秒，存活率 2.2%
+  #   并发 800 → 83.1 条/秒，存活率 1.7%   ← 吞吐最高但误杀严重
+  # 高并发会把可用代理挤成超时（超时率从 66% 升到 85%），池子质量下降。
+  # 取 400 作为平衡点：热池（alive+candidate）300 秒内能覆盖完，且误杀可控。
+  concurrency: 400
+  # 单次探测硬超时（秒）。实测 p99 延迟 7.9s，低于 8s 会误杀大量可用代理
+  timeout: 8.0
+  # 目标探测站：明文探测拿 origin + headers 判匿名，比 HTTPS 便宜得多
+  check_url_http: "http://httpbin.org/get"
+  check_url_https: "https://api.ipify.org?format=json"
+  # 单次探测内的尝试次数。
+  # 实测：失败代理占 82-89%，若对失败也重试 2 次，单条耗时翻倍（16s），
+  # 4000 条一轮要到 324s，超出 5 分钟周期。故失败不重试，靠后续轮次的退避复验救回。
+  attempts: 1
+  retry_delay: 0.4
+
+# ---------- 入库门槛 / 状态机 ----------
+policy:
+  # 连续通过多少次才升为 alive
+  # 实测：单次存活率 11-18%，而"存活后下一轮仍存活"仅 23%。
+  # 若要求连续 2 次通过，池子会被压到 2.5%（22000 条只剩 550），且首轮结束池子为空。
+  # 故设为 1：首次通过即入池（立即可用），质量由后续轮次淘汰机制保证。
+  promote_consecutive_ok: 1
+  # 连续失败多少次判 dead。
+  # 实测踩坑：原来设 3，导致 1.5 万条失败代理长期堆在 candidate 里反复占用预算，
+  # 每轮 4000 条额度有 90% 花在已知的失败者身上。设为 2 让它们更快出清。
+  kill_consecutive_fail: 2
+  # 连续失败多少次永久拉黑（要大于 kill_consecutive_fail）
+  ban_consecutive_fail: 8
+  # ⚠️ dead 不再"冷却后重测"。
+  # 实测跑 3 小时后：3 万条 dead 全部冷却到期，每轮回来吃掉 20% 预算，
+  # 永远在 dead↔candidate 之间打转，库从 2.2 万膨胀到 3.7 万条。
+  # 免费代理死了基本不复活，正确做法是判死后直接进 cleanup 清掉。
+  # 这两个值现在只用于数据库清理的判断（dead_purge_*），不再用于"复活重测"。
+  dead_cooldown: 0
+  # banned 后的冷却秒数（7 天）
+  ban_cooldown: 604800
+  # 健康分：通过 +n，失败 -n
+  # ⚠️ 实测问题：score_up=12 且上限 100 时，任何代理成功 5 次就顶满 100，
+  # 面板上全部 alive 代理评分都是 100、进度条全满，完全失去区分度。
+  # 改成小幅加分（2）+ 上限仍 100，让评分更多反映"失败经历"而非"成功次数"：
+  # 长期稳定代理需要 25 次全成功才满分，偶发失败会明显拉低。
+  score_up: 2
+  score_down: 30
+  score_max: 100
+  # dead 代理连续失败到 ban 阈值前，score 低于此值也直接淘汰
+  score_floor: 0
+
+# ---------- 调度 ----------
+scheduler:
+  # 主周期秒数（用户要求 5 分钟）
+  interval: 300
+  # 是否每轮都重新抓取源
+  refetch_every_round: true
+  # 单轮验证条数上限。
+  # 实测：并发 400 约 50 条/秒，预算 280s → 理论 14000 条。
+  # 源扩到 29 个后冷池有 15000 条 new，原来 4000 条/轮要近 2 小时才盖一遍，
+  # 加到 12000 后 1-2 个扩充轮就能把新源验完（30 分钟一轮）。
+  candidate_batch: 12000
+  # 单轮总时长上限，超过则提前收尾并记日志（避免拖到下一轮）
+  round_budget: 280
+  # 新代理单轮内快速双验，通过即可直接入池
+  fast_promote: true
+  # 每隔几轮做一次带抓取的常规扩充轮，其余轮次只精检热池（alive+candidate）。
+  # 实测：全量 2 万多条用 400 并发也要 9 分钟才验完，塞不进 5 分钟；
+  # 而把并发推到 800 硬塞会因拥塞误杀（存活率 5.9% → 1.7%）。
+  # 所以热池每 5 分钟 100% 精检（约 1500 条，30-60 秒跑完），
+  # 冷池每 6 轮（30 分钟）扩充一次，这样既满足"5 分钟清理"又不牺牲质量。
+  refresh_every_n_rounds: 6
+
+# ---------- 清理 ----------
+cleanup:
+  # check_log 保留天数
+  log_retention_days: 3
+  # 从未成功过且创建超过 N 小时的 new/candidate 直接删除
+  stale_hours: 48
+  # 单表最大行数保护（超过按 score 从低到高删）
+  max_rows: 200000
+  # 冷池上限（new + candidate）。超出时先删失败次数最多、评分最低的。
+  # 实测：单轮预算 280s × 并发400(50条/秒) = 可验 14000 条。
+  # 源从 12 个扩到 29 个后去重总量 37724 条，全塞进来要 2.7 轮才盖完（13 分钟），
+  # 但新增源太多会摊薄每轮预算。15000 是平衡点：1.1 轮覆盖，且保留足够候选量。
+  cold_pool_limit: 15000
+  # dead 真清：连续失败达 N 次 + 最后一次检查已过 N 秒 → 直接删库。
+  # ⚠️ 实测结论：不要指望"冷却后重测"救回免费代理。
+  # 跑 3 小时后 dead 堆到 35738 条，全部冷却到期，每轮回来消耗预算，
+  # 永远在 dead↔candidate 之间打转，库从 2.2 万涨到 3.7 万条、WAL 13MB。
+  # min_fails 必须与 kill_consecutive_fail 对齐（2 次判死就 2 次清）。
+  # purge_seconds 不能设大：实测每轮有 1600+ 条被判死，设 900 秒会让清理速度
+  # 远远跟不上产速度（清 50/产 1700），dead 净增长。设 60 秒即下一轮就清。
+  dead_purge_min_fails: 2
+  dead_purge_seconds: 60
+  # banned 的保留时长（秒）。ban_cooldown 是"不再重测"，不是"永久保留"。
+  # 实测一天累积上千条，超过此期限直接删库。
+  banned_retention_seconds: 86400
+  # 墓碑有效期（秒）。判死的代理在这段时间内不再被重新抓取入库。
+  # ⚠️ 必须要有：实测 purge 删掉 dead 后，下一轮抓取把同一批全当"新"灌回来
+  # （一次新增 13809 条全是刚删的），形成「验死→删除→重抓→再验」死循环。
+  tombstone_seconds: 21600
+  # 每轮清理后做 WAL checkpoint，避免 wal 无限增长（仅 sqlite 生效）
+  wal_checkpoint: true
+
+# ---------- API ----------
+api:
+  # 监听地址。
+  #   127.0.0.1 = 只有本机能访问（其他机器连不上，会 connection refused）
+  #   0.0.0.0   = 局域网/公网可访问，其他机器用 http://<本机IP>:8088
+  # ⚠️ 改成 0.0.0.0 后如果机器有公网 IP，请务必设置下面的 admin_token，
+  #    否则任何人都能调 /api/proxies/delete 删你的数据。
+  host: "0.0.0.0"
+  port: 8088
+  # 管理接口鉴权 token（X-Admin-Token 头）。留空 = 不校验。
+  # 说明：控制台页面本身不读这个头，设了之后页面上的统计/列表会 401。
+  # 若要保留控制台可用又想限制管理操作，用防火墙限制来源 IP 更省事。
+  admin_token: ""
+  # 对外取代理接口允许的最大返回数
+  max_batch: 100

@@ -1,0 +1,882 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ProxyPool · 代理池控制台</title>
+<style>
+  /* ══════════════ 设计说明 ══════════════
+     场景：运维控制台，受众＝自己/运维同事
+     刻度：版式张力 3 / 动效 2 / 信息密度 8
+     一个强调色（琥珀）、一套中性色（zinc）、等宽数字
+     数据是主角，装饰全砍
+     ═══════════════════════════════════ */
+  *, *::before, *::after { box-sizing: border-box; }
+
+  :root {
+    --bg: #09090b;
+    --surface: #111113;
+    --surface-2: #18181b;
+    --surface-3: #1f1f23;
+    --line: #27272a;
+    --line-soft: #1c1c1f;
+    --fg: #f4f4f5;
+    --fg-2: #a1a1aa;
+    --fg-3: #6b6b74;
+    --accent: #d9a441;
+    --ok: #4ade80;
+    --warn: #fbbf24;
+    --bad: #f87171;
+    --info: #60a5fa;
+    --violet: #a78bfa;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    --sans: "Inter", "PingFang SC", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
+    --r: 12px;
+    --r-sm: 8px;
+  }
+  html[data-theme="light"] {
+    --bg: #fafaf9; --surface: #fff; --surface-2: #f6f6f5; --surface-3: #efefed;
+    --line: #e4e4e2; --line-soft: #efefec; --fg: #18181b; --fg-2: #52525b; --fg-3: #a1a1aa;
+    --accent: #a8721f;
+  }
+
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font-family: var(--sans); font-size: 13px; line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  .num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+  /* ══════════ 顶栏 ══════════ */
+  .topbar {
+    position: sticky; top: 0; z-index: 100;
+    display: flex; align-items: center; gap: 14px;
+    padding: 0 22px; height: 58px;
+    background: color-mix(in srgb, var(--bg) 85%, transparent);
+    backdrop-filter: blur(14px) saturate(180%);
+    border-bottom: 1px solid var(--line);
+  }
+  .brand { display: flex; align-items: center; gap: 9px; font-weight: 600; font-size: 14px; letter-spacing: -.015em; }
+  .pulse {
+    width: 7px; height: 7px; border-radius: 50%; background: var(--ok);
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 60%, transparent);
+    animation: pulse 2.4s cubic-bezier(.4,0,.6,1) infinite;
+  }
+  @keyframes pulse {
+    0%,100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 55%, transparent); }
+    50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--ok) 0%, transparent); }
+  }
+  .pulse.idle { background: var(--fg-3); animation: none; box-shadow: none; }
+  .brand small { color: var(--fg-3); font-weight: 400; font-size: 12px; letter-spacing: 0; }
+  .spacer { flex: 1; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 10px; border-radius: 7px; font-size: 11.5px;
+    background: var(--surface-2); border: 1px solid var(--line);
+    color: var(--fg-2); font-family: var(--mono);
+  }
+  .btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 6px 13px; border-radius: var(--r-sm); cursor: pointer;
+    border: 1px solid var(--line); background: var(--surface-2);
+    color: var(--fg-2); font-size: 12px; font-family: inherit; font-weight: 500;
+    transition: transform .1s cubic-bezier(.32,.72,0,1), background .15s, color .15s, border-color .15s;
+  }
+  .btn:hover { background: var(--surface-3); color: var(--fg); border-color: var(--fg-3); }
+  .btn:active { transform: scale(.97); }
+  .btn:disabled { opacity: .4; cursor: not-allowed; }
+  .btn:disabled:active { transform: none; }
+  .btn-accent {
+    background: var(--accent); color: #1a1200; border-color: var(--accent); font-weight: 600;
+  }
+  .btn-accent:hover { background: color-mix(in srgb, var(--accent) 85%, white); color: #1a1200; }
+
+  /* ══════════ 布局 ══════════ */
+  .wrap { max-width: 1600px; margin: 0 auto; padding: 20px 22px 60px; }
+  .grid-2 { display: grid; grid-template-columns: 1.55fr 1fr; gap: 16px; align-items: start; }
+  @media (max-width: 1180px) { .grid-2 { grid-template-columns: 1fr; } }
+
+  /* ══════════ 卡片 ══════════ */
+  .card {
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: var(--r); overflow: hidden;
+  }
+  .card + .card { margin-top: 16px; }
+  .card-hd {
+    display: flex; align-items: baseline; gap: 10px;
+    padding: 13px 16px; border-bottom: 1px solid var(--line-soft);
+  }
+  .card-hd h2 { margin: 0; font-size: 12.5px; font-weight: 600; letter-spacing: .01em; }
+  .card-hd .meta { font-size: 11px; color: var(--fg-3); font-family: var(--mono); }
+  .card-hd .right { margin-left: auto; display: flex; gap: 6px; align-items: center; }
+  .card-bd { padding: 16px; }
+  .card-bd.flush { padding: 0; }
+
+  /* ══════════ KPI ══════════ */
+  .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px;
+          background: var(--line); border: 1px solid var(--line);
+          border-radius: var(--r); overflow: hidden; margin-bottom: 16px; }
+  @media (max-width: 1000px) { .kpis { grid-template-columns: repeat(2, 1fr); } }
+  .kpi { background: var(--surface); padding: 15px 17px 14px; }
+  .kpi-lb {
+    font-size: 10.5px; color: var(--fg-3); letter-spacing: .06em;
+    text-transform: uppercase; font-weight: 500; margin-bottom: 7px;
+  }
+  .kpi-v {
+    font-family: var(--mono); font-size: 27px; font-weight: 600;
+    font-variant-numeric: tabular-nums; letter-spacing: -.025em; line-height: 1;
+  }
+  .kpi-sub { font-size: 11px; color: var(--fg-3); margin-top: 7px; font-family: var(--mono); line-height: 1.7; }
+  .kpi-sub b { color: var(--fg-2); font-weight: 500; }
+  .stackbar { display: flex; height: 5px; border-radius: 3px; overflow: hidden; margin-top: 9px; background: var(--surface-3); }
+  .stackbar i { display: block; height: 100%; transition: width .4s cubic-bezier(.32,.72,0,1); }
+
+  /* ══════════ 图表 ══════════ */
+  .chart-wrap { position: relative; width: 100%; padding: 6px 0 4px; overflow: hidden; }
+  /* overflow:hidden 是必须的：SVG 用 preserveAspectRatio:none 拉伸时，
+     超出的折线会溢出到相邻卡片上（实测在趋势图底部出现过彩色色块）。 */
+  svg.chart { display: block; width: 100%; height: auto; overflow: hidden; }
+  .chart-legend {
+    display: flex; flex-wrap: wrap; gap: 14px; padding: 4px 16px 13px;
+    font-size: 11px; color: var(--fg-3);
+  }
+  .chart-legend span { display: inline-flex; align-items: center; gap: 5px; }
+  .chart-legend i { width: 10px; height: 2.5px; border-radius: 2px; display: block; }
+  .axis-lb { font-family: var(--mono); font-size: 9.5px; fill: var(--fg-3); }
+  .grid-line { stroke: var(--line-soft); stroke-width: 1; }
+
+  /* ══════════ 表格 ══════════ */
+  .tbl-scroll { max-height: 520px; overflow: auto; }
+  table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 12px; }
+  thead th {
+    position: sticky; top: 0; z-index: 5;
+    text-align: left; padding: 8px 12px; font-weight: 500; font-size: 10.5px;
+    color: var(--fg-3); background: var(--surface-2);
+    border-bottom: 1px solid var(--line); white-space: nowrap;
+    letter-spacing: .04em; text-transform: uppercase;
+  }
+  thead th.r { text-align: right; }
+  tbody td { padding: 7px 12px; border-bottom: 1px solid var(--line-soft); vertical-align: middle; white-space: nowrap; }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: var(--surface-2); }
+  td.r { text-align: right; }
+  td.addr { font-family: var(--mono); font-size: 11.5px; color: var(--fg); }
+
+  /* ══════════ 徽章 ══════════ */
+  .bdg {
+    display: inline-flex; align-items: center; gap: 3px;
+    padding: 1.5px 6px; border-radius: 4px; font-size: 10.5px;
+    font-family: var(--mono); border: 1px solid transparent; white-space: nowrap;
+    font-weight: 500; line-height: 1.5;
+  }
+  .bdg.alive { color: var(--ok); background: color-mix(in srgb, var(--ok) 11%, transparent); border-color: color-mix(in srgb, var(--ok) 26%, transparent); }
+  .bdg.candidate { color: var(--info); background: color-mix(in srgb, var(--info) 11%, transparent); border-color: color-mix(in srgb, var(--info) 26%, transparent); }
+  .bdg.new { color: var(--fg-2); background: var(--surface-2); border-color: var(--line); }
+  .bdg.dead { color: var(--warn); background: color-mix(in srgb, var(--warn) 11%, transparent); border-color: color-mix(in srgb, var(--warn) 26%, transparent); }
+  .bdg.banned { color: var(--bad); background: color-mix(in srgb, var(--bad) 11%, transparent); border-color: color-mix(in srgb, var(--bad) 26%, transparent); }
+  .bdg.elite { color: var(--violet); background: color-mix(in srgb, var(--violet) 11%, transparent); border-color: color-mix(in srgb, var(--violet) 24%, transparent); }
+  .bdg.anonymous { color: var(--info); background: color-mix(in srgb, var(--info) 9%, transparent); border-color: color-mix(in srgb, var(--info) 22%, transparent); }
+  .bdg.transparent { color: var(--fg-3); background: var(--surface-2); border-color: var(--line); }
+  .bdg.plain { color: var(--fg-2); background: var(--surface-2); border-color: var(--line); }
+  .bdg.yes { color: var(--ok); background: color-mix(in srgb, var(--ok) 11%, transparent); border-color: color-mix(in srgb, var(--ok) 24%, transparent); }
+  .bdg.no { color: var(--fg-3); background: transparent; border-color: var(--line); }
+
+  /* ══════════ 评分 ══════════ */
+  .score { display: inline-flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 11px; }
+  .score-track { display: block; width: 38px; height: 3px; border-radius: 2px; background: var(--surface-3); overflow: hidden; flex: none; }
+  .score-fill { display: block; height: 100%; border-radius: 2px; transition: width .3s cubic-bezier(.32,.72,0,1); }
+
+  /* ══════════ 筛选 ══════════ */
+  .filters { display: flex; flex-wrap: wrap; gap: 7px; align-items: center; padding: 11px 16px; border-bottom: 1px solid var(--line-soft); }
+  .filters select, .filters input {
+    padding: 5px 9px; border-radius: 6px; font-size: 11.5px; font-family: inherit;
+    background: var(--surface-2); color: var(--fg); border: 1px solid var(--line);
+    outline: none; transition: border-color .15s, background .15s;
+  }
+  .filters select:hover, .filters input:hover { border-color: var(--fg-3); }
+  .filters select:focus, .filters input:focus { border-color: var(--accent); background: var(--surface-3); }
+  .filters input { min-width: 130px; }
+  .filters input::placeholder { color: var(--fg-3); }
+
+  /* ══════════ 轮次列表 ══════════ */
+  .rounds { max-height: 340px; overflow: auto; }
+  .rrow {
+    display: grid; grid-template-columns: 46px 1fr auto;
+    gap: 10px; align-items: center; padding: 7px 16px;
+    font-family: var(--mono); font-size: 11px;
+    border-bottom: 1px solid var(--line-soft);
+  }
+  .rrow:last-child { border-bottom: none; }
+  .rrow:hover { background: var(--surface-2); }
+  .rrow .t { color: var(--fg-3); }
+  .rrow .m { display: flex; gap: 11px; flex-wrap: wrap; }
+  .rrow .m i { color: var(--fg-3); font-style: normal; }
+  .rrow .m b { font-weight: 600; }
+  .rrow .d { color: var(--fg-3); }
+
+  /* ══════════ 错误列表 ══════════ */
+  .erow { display: grid; grid-template-columns: 1fr 44px; gap: 10px; align-items: center;
+          padding: 6px 16px; font-family: var(--mono); font-size: 11px;
+          border-bottom: 1px solid var(--line-soft); position: relative; }
+  .erow:last-child { border-bottom: none; }
+  .erow .bar { position: absolute; left: 0; top: 0; bottom: 0; background: color-mix(in srgb, var(--bad) 9%, transparent); }
+  .erow .n, .erow .c { position: relative; z-index: 1; }
+  .erow .n { color: var(--fg-2); overflow: hidden; text-overflow: ellipsis; }
+  .erow .c { text-align: right; color: var(--bad); font-weight: 600; }
+
+  /* ══════════ 延迟分布 ══════════ */
+  .lat-row { display: grid; grid-template-columns: 60px 1fr 34px; gap: 8px;
+             align-items: center; padding: 3px 16px; font-family: var(--mono); font-size: 10.5px; }
+  .lat-row .lb { color: var(--fg-3); text-align: right; }
+  .lat-row .tr { height: 12px; background: var(--surface-2); border-radius: 3px; overflow: hidden; }
+  .lat-row .fl { height: 100%; border-radius: 3px; background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 55%, transparent), var(--accent)); transition: width .4s cubic-bezier(.32,.72,0,1); }
+  .lat-row .n { color: var(--fg-2); text-align: right; }
+
+  /* ══════════ 空态 / 骨架 ══════════ */
+  .empty { padding: 32px 20px; text-align: center; color: var(--fg-3); font-size: 12px; }
+  .empty b { display: block; color: var(--fg-2); font-size: 12.5px; margin-bottom: 5px; font-weight: 500; }
+
+  /* ══════════ 代码块 ══════════ */
+  .code { background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--r-sm);
+          padding: 12px 14px; font-family: var(--mono); font-size: 11px; line-height: 1.95;
+          overflow-x: auto; color: var(--fg-2); margin: 0; }
+  .code .c { color: var(--fg-3); }
+  .code .k { color: var(--accent); font-weight: 500; }
+  .code .s { color: var(--ok); }
+
+  /* ══════════ 分页 ══════════ */
+  .pager { display: flex; align-items: center; gap: 8px; padding: 10px 16px; border-top: 1px solid var(--line-soft); }
+  .pager .info { font-size: 11px; color: var(--fg-3); font-family: var(--mono); }
+
+  /* ══════════ Toast ══════════ */
+  .toast {
+    position: fixed; bottom: 24px; right: 24px; z-index: 300;
+    padding: 11px 17px; border-radius: var(--r-sm); font-size: 12px;
+    background: var(--surface-3); border: 1px solid var(--line);
+    color: var(--fg); box-shadow: 0 12px 40px rgba(0,0,0,.55);
+    opacity: 0; transform: translateY(8px);
+    transition: opacity .22s, transform .22s cubic-bezier(.32,.72,0,1);
+    pointer-events: none; max-width: 320px;
+  }
+  .toast.show { opacity: 1; transform: translateY(0); }
+  .toast.ok { border-color: color-mix(in srgb, var(--ok) 35%, var(--line)); }
+  .toast.err { border-color: color-mix(in srgb, var(--bad) 35%, var(--line)); }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+  }
+  @media (max-width: 760px) {
+    .wrap { padding: 14px; }
+    .topbar { padding: 0 14px; gap: 8px; }
+    .brand small, #countdown { display: none; }
+    .kpi-v { font-size: 22px; }
+  }
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="pulse idle" id="pulse"></span>
+    ProxyPool
+    <small>代理池控制台</small>
+  </div>
+  <div class="spacer"></div>
+  <span class="chip" id="countdown">下一轮 --:--</span>
+  <button class="btn" id="btn-theme" title="切换明暗">◐</button>
+  <button class="btn" id="btn-refresh">刷新</button>
+  <button class="btn btn-accent" id="btn-trigger">立即跑一轮</button>
+</header>
+
+<div class="wrap">
+
+  <!-- ═══════ KPI ═══════ -->
+  <section class="kpis">
+    <div class="kpi">
+      <div class="kpi-lb">可用代理</div>
+      <div class="kpi-v" id="k-alive" style="color:var(--ok)">—</div>
+      <div class="kpi-sub" id="k-alive-sub">—</div>
+      <div class="stackbar" id="stackbar"></div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-lb">库存总量</div>
+      <div class="kpi-v" id="k-total" style="color:var(--fg-2)">—</div>
+      <div class="kpi-sub" id="k-total-sub">—</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-lb">可用率</div>
+      <div class="kpi-v" id="k-rate" style="color:var(--warn)">—</div>
+      <div class="kpi-sub" id="k-rate-sub">—</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-lb">支持 HTTPS</div>
+      <div class="kpi-v" id="k-https" style="color:var(--fg)">—</div>
+      <div class="kpi-sub" id="k-https-sub">—</div>
+    </div>
+  </section>
+
+  <div class="grid-2">
+
+    <div>
+      <!-- 轮次趋势 -->
+      <section class="card">
+        <div class="card-hd">
+          <h2>轮次趋势</h2>
+          <span class="meta" id="trend-meta">—</span>
+          <div class="right">
+            <select id="trend-range" class="btn" style="padding:4px 8px;font-size:11px">
+              <option value="30">最近 30 轮</option>
+              <option value="60" selected>最近 60 轮</option>
+              <option value="120">最近 120 轮</option>
+            </select>
+          </div>
+        </div>
+        <div class="chart-wrap" id="trend-chart">
+          <div class="empty"><b>加载中</b></div>
+        </div>
+        <div class="chart-legend">
+          <span><i style="background:var(--ok)"></i>存活（左轴）</span>
+          <span><i style="background:var(--accent)"></i>晋升（左轴）</span>
+          <span><i style="background:var(--info);opacity:.75"></i>验证量（右轴）</span>
+        </div>
+      </section>
+
+      <!-- 代理库存 -->
+      <section class="card">
+        <div class="card-hd">
+          <h2>代理库存</h2>
+          <span class="meta" id="list-total">—</span>
+        </div>
+        <div class="filters">
+          <select id="f-status">
+            <option value="">全部状态</option>
+            <option value="alive">可用</option>
+            <option value="candidate">候选</option>
+            <option value="new">待验</option>
+            <option value="dead">已下线</option>
+            <option value="banned">已拉黑</option>
+          </select>
+          <select id="f-proto">
+            <option value="">全部协议</option>
+            <option value="http">http</option>
+            <option value="https">https</option>
+            <option value="socks4">socks4</option>
+            <option value="socks5">socks5</option>
+          </select>
+          <select id="f-anon">
+            <option value="">全部匿名度</option>
+            <option value="elite">高匿</option>
+            <option value="anonymous">匿名</option>
+            <option value="transparent">透明</option>
+          </select>
+          <select id="f-https">
+            <option value="">全部 HTTPS</option>
+            <option value="1">支持 HTTPS</option>
+          </select>
+          <select id="f-order">
+            <option value="score">按评分</option>
+            <option value="latency">按延迟</option>
+            <option value="recent">按最近可用</option>
+            <option value="created">按入库时间</option>
+          </select>
+          <input id="f-search" placeholder="搜索 IP" />
+        </div>
+        <div class="card-bd flush">
+          <div class="tbl-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>代理</th><th>协议</th><th>状态</th><th>匿名</th>
+                  <th class="r">延迟</th><th>评分</th><th class="r">成功/失败</th>
+                  <th>HTTPS</th><th>最近可用</th>
+                </tr>
+              </thead>
+              <tbody id="tbody">
+                <tr><td colspan="9"><div class="empty"><b>加载中</b></div></td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="pager">
+            <button class="btn" id="prev">← 上一页</button>
+            <button class="btn" id="next">下一页 →</button>
+            <span class="info" id="pager-info"></span>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <div>
+      <!-- 延迟分布 -->
+      <section class="card">
+        <div class="card-hd">
+          <h2>延迟分布</h2>
+          <span class="meta" id="lat-meta">—</span>
+        </div>
+        <div class="card-bd" style="padding:10px 0" id="lat-chart">
+          <div class="empty" style="padding:20px"><b>加载中</b></div>
+        </div>
+      </section>
+
+      <!-- 最近轮次 -->
+      <section class="card">
+        <div class="card-hd">
+          <h2>最近轮次</h2>
+          <span class="meta">抓取 → 验证 → 入库 → 清理</span>
+        </div>
+        <div class="rounds" id="rounds">
+          <div class="empty"><b>暂无轮次</b>点击右上角「立即跑一轮」</div>
+        </div>
+      </section>
+
+      <!-- 失败原因 -->
+      <section class="card">
+        <div class="card-hd">
+          <h2>失败原因</h2>
+          <span class="meta">近 6 小时</span>
+        </div>
+        <div id="errors">
+          <div class="empty"><b>暂无数据</b></div>
+        </div>
+      </section>
+
+      <!-- 取用方式 -->
+      <section class="card">
+        <div class="card-hd"><h2>取用方式</h2><span class="meta" id="api-base"></span></div>
+        <div class="card-bd">
+          <pre class="code" id="api-code"></pre>
+        </div>
+      </section>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+/* ═══════════════════════════════════════════════
+   工具
+   ═══════════════════════════════════════════════ */
+const $ = (s) => document.querySelector(s);
+const state = { page: 1, size: 50, total: 0, filters: {}, trendRange: 60 };
+let countdownTimer = null, nextRoundAt = 0;
+
+const fmt = (n) => (n === null || n === undefined) ? '—' : n.toLocaleString('en-US');
+const fmtMs = (ms) => {
+  if (ms === null || ms === undefined) return '—';
+  return ms >= 1000 ? (ms / 1000).toFixed(1) + 's' : Math.round(ms) + 'ms';
+};
+const fmtAgo = (iso) => {
+  if (!iso) return '—';
+  const d = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (d < 0) return '刚刚';
+  if (d < 60) return Math.floor(d) + 's 前';
+  if (d < 3600) return Math.floor(d / 60) + 'm 前';
+  if (d < 86400) return Math.floor(d / 3600) + 'h 前';
+  return Math.floor(d / 86400) + 'd 前';
+};
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c =>
+  ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+function toast(msg, type = '') {
+  const el = $('#toast');
+  el.textContent = msg;
+  el.className = 'toast show ' + type;
+  clearTimeout(el._t);
+  el._t = setTimeout(() => { el.className = 'toast ' + type; }, 2800);
+}
+
+const ANON = { elite: '高匿', anonymous: '匿名', transparent: '透明' };
+const STATUS = { alive: '可用', candidate: '候选', new: '待验', dead: '下线', banned: '拉黑' };
+const scoreColor = (s) => s >= 75 ? 'var(--ok)' : s >= 45 ? 'var(--warn)' : 'var(--bad)';
+
+/* ═══════════════════════════════════════════════
+   SVG 图表（手写，零依赖）
+   ═══════════════════════════════════════════════ */
+const NS = 'http://www.w3.org/2000/svg';
+function el(tag, attrs = {}) {
+  const e = document.createElementNS(NS, tag);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+  return e;
+}
+
+function lineChart(container, series, opts = {}) {
+  const H = opts.height || 190;
+  const PAD = { t: 10, r: opts.dualAxis ? 42 : 12, b: 22, l: 44 };
+  container.innerHTML = '';
+  const W = Math.max(320, container.clientWidth || 640);
+  const iw = W - PAD.l - PAD.r, ih = H - PAD.t - PAD.b;
+
+  const n = Math.max(...series.map(s => s.data.length), 0);
+  if (!n) { container.innerHTML = '<div class="empty"><b>暂无数据</b></div>'; return; }
+
+  // 双轴：左轴给"量级小的"（存活/晋升），右轴给"量级大的"（验证量）。
+  // 实测问题：验证量 12000 vs 存活 200 同轴时，存活曲线被压成一条贴底的直线，完全看不出趋势。
+  const leftSeries = series.filter(s => s.axis !== 'right');
+  const rightSeries = series.filter(s => s.axis === 'right');
+  const maxOf = (arr) => {
+    const v = arr.flatMap(s => s.data).filter(x => x != null);
+    return Math.max(1, ...v);
+  };
+  const maxL = maxOf(leftSeries.length ? leftSeries : series);
+  const maxR = rightSeries.length ? maxOf(rightSeries) : null;
+
+  const svg = el('svg', { class: 'chart', viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: 'none' });
+  const x = (i) => PAD.l + (n === 1 ? iw / 2 : (i / (n - 1)) * iw);
+  const yFor = (v, max) => PAD.t + ih - (Math.max(0, v) / max) * ih;
+
+  // 网格 + 左轴刻度
+  const ticks = 4;
+  const fmtTick = (val) => val >= 10000 ? (val / 1000).toFixed(0) + 'k'
+                        : val >= 1000 ? (val / 1000).toFixed(1) + 'k'
+                        : Math.round(val);
+  for (let i = 0; i <= ticks; i++) {
+    const yy = PAD.t + ih - (i / ticks) * ih;
+    svg.appendChild(el('line', {
+      x1: PAD.l, y1: yy, x2: W - PAD.r, y2: yy,
+      class: 'grid-line', 'stroke-dasharray': i === 0 ? '0' : '3 3'
+    }));
+    const lt = el('text', { x: PAD.l - 6, y: yy + 3, 'text-anchor': 'end', class: 'axis-lb' });
+    lt.textContent = fmtTick((maxL / ticks) * i);
+    svg.appendChild(lt);
+    if (maxR) {
+      const rt = el('text', { x: W - PAD.r + 6, y: yy + 3, 'text-anchor': 'start', class: 'axis-lb' });
+      rt.textContent = fmtTick((maxR / ticks) * i);
+      svg.appendChild(rt);
+    }
+  }
+
+  series.forEach(s => {
+    const max = (s.axis === 'right' && maxR) ? maxR : maxL;
+    const pts = s.data.map((v, i) => v == null ? null : [x(i), yFor(v, max)]).filter(Boolean);
+    if (!pts.length) return;
+    if (s.area) {
+      const d = `M${pts[0][0]},${PAD.t + ih} ` +
+                pts.map(p => `L${p[0]},${p[1]}`).join(' ') +
+                ` L${pts[pts.length - 1][0]},${PAD.t + ih} Z`;
+      svg.appendChild(el('path', { d, fill: s.color, 'fill-opacity': .10, stroke: 'none' }));
+    }
+    if (pts.length > 1) {
+      const d = pts.map((p, i) => (i ? 'L' : 'M') + p[0] + ',' + p[1]).join(' ');
+      svg.appendChild(el('path', {
+        d, fill: 'none', stroke: s.color, 'stroke-width': s.width || 1.6,
+        'stroke-dasharray': s.dashed ? '4 3' : '0',
+        'stroke-linejoin': 'round', 'stroke-linecap': 'round',
+        'stroke-opacity': s.opacity ?? 1
+      }));
+    } else {
+      svg.appendChild(el('circle', { cx: pts[0][0], cy: pts[0][1], r: 2.5, fill: s.color }));
+    }
+  });
+
+  // X 轴标签（起 / 中 / 止）
+  if (opts.xLabels && opts.xLabels.length) {
+    const idx = [0, Math.floor((n - 1) / 2), n - 1].filter((v, i, a) => a.indexOf(v) === i);
+    idx.forEach(i => {
+      const t = el('text', {
+        x: i === 0 ? PAD.l : i === n - 1 ? W - PAD.r : x(i),
+        y: H - 5,
+        'text-anchor': i === 0 ? 'start' : i === n - 1 ? 'end' : 'middle',
+        class: 'axis-lb'
+      });
+      t.textContent = opts.xLabels[i] || '';
+      svg.appendChild(t);
+    });
+  }
+  container.appendChild(svg);
+}
+
+function barRows(container, labels, counts) {
+  container.innerHTML = '';
+  const max = Math.max(1, ...counts);
+  const total = counts.reduce((a, b) => a + b, 0);
+  labels.forEach((lb, i) => {
+    const c = counts[i] || 0;
+    const row = document.createElement('div');
+    row.className = 'lat-row';
+    row.innerHTML = `<span class="lb">${esc(lb)}</span>
+      <span class="tr"><span class="fl" style="width:${Math.max(c ? 1.5 : 0, c / max * 100)}%"></span></span>
+      <span class="n">${c}</span>`;
+    container.appendChild(row);
+  });
+  if (!total) container.innerHTML = '<div class="empty" style="padding:20px"><b>无延迟数据</b></div>';
+}
+
+/* ═══════════════════════════════════════════════
+   数据加载
+   ═══════════════════════════════════════════════ */
+async function getJSON(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  return r.json();
+}
+
+async function loadStats() {
+  try {
+    const d = await getJSON('/api/stats');
+    const sc = d.status_counts || {};
+    $('#k-alive').textContent = fmt(d.alive);
+    $('#k-total').textContent = fmt(d.total);
+    $('#k-rate').textContent = (d.alive_rate || 0).toFixed(1) + '%';
+    $('#k-https').textContent = fmt(d.alive_https_capable);
+
+    const ab = d.alive_by_anonymity || {};
+    $('#k-alive-sub').innerHTML =
+      `高匿 <b>${fmt(ab.elite || 0)}</b> · 匿名 <b>${fmt(ab.anonymous || 0)}</b> · 透明 <b>${fmt(ab.transparent || 0)}</b>`;
+    $('#k-total-sub').innerHTML =
+      `待验 <b>${fmt(sc.new)}</b> · 候选 <b>${fmt(sc.candidate)}</b> · 下线 <b>${fmt(sc.dead)}</b> · 拉黑 <b>${fmt(sc.banned)}</b>`;
+
+    const bp = d.alive_by_protocol || {};
+    $('#k-https-sub').innerHTML =
+      Object.entries(bp).map(([k, v]) => `${esc(k)} <b>${v}</b>`).join(' · ') || '—';
+
+    // 池子构成堆叠条
+    const total = d.total || 1;
+    const segs = [
+      ['alive', 'var(--ok)'], ['candidate', 'var(--info)'],
+      ['new', 'var(--fg-3)'], ['dead', 'var(--warn)'], ['banned', 'var(--bad)'],
+    ];
+    $('#stackbar').innerHTML = segs.map(([k, c]) => {
+      const v = sc[k] || 0;
+      return v ? `<i style="width:${v / total * 100}%;background:${c}" title="${STATUS[k]} ${v}"></i>` : '';
+    }).join('');
+
+    const running = d.scheduler && d.scheduler.running;
+    $('#pulse').className = 'pulse' + (running ? '' : ' idle');
+
+    if (d.scheduler && d.scheduler.interval) {
+      nextRoundAt = Date.now() + d.scheduler.interval * 1000;
+      startCountdown();
+    }
+  } catch (e) {
+    toast('统计加载失败: ' + e.message, 'err');
+  }
+}
+
+function startCountdown() {
+  if (countdownTimer) clearInterval(countdownTimer);
+  const tick = () => {
+    const left = Math.max(0, Math.floor((nextRoundAt - Date.now()) / 1000));
+    const m = String(Math.floor(left / 60)).padStart(2, '0');
+    const s = String(left % 60).padStart(2, '0');
+    $('#countdown').textContent = `下一轮 ${m}:${s}`;
+    if (left === 0) { clearInterval(countdownTimer); loadAll(); }
+  };
+  tick();
+  countdownTimer = setInterval(tick, 1000);
+}
+
+async function loadTrend() {
+  try {
+    const d = await getJSON('/api/trend?limit=' + state.trendRange);
+    const pts = d.points || [];
+    if (!pts.length) {
+      $('#trend-chart').innerHTML = '<div class="empty"><b>暂无轮次数据</b>点击「立即跑一轮」</div>';
+      $('#trend-meta').textContent = '—';
+      return;
+    }
+    const xLabels = pts.map(p => {
+      const t = p.t ? new Date(p.t) : null;
+      return t ? t.toTimeString().slice(0, 5) : '';
+    });
+    lineChart($('#trend-chart'), [
+      { data: pts.map(p => p.ok),       color: 'var(--ok)',     width: 2, area: true },
+      { data: pts.map(p => p.promoted), color: 'var(--accent)', width: 1.6 },
+      { data: pts.map(p => p.checked),  color: 'var(--info)',   width: 1.2,
+        axis: 'right', dashed: true, opacity: .75 },
+    ], { height: 190, xLabels, dualAxis: true });
+
+    const last = pts[pts.length - 1];
+    const avgDur = (pts.reduce((a, p) => a + (p.duration_s || 0), 0) / pts.length).toFixed(0);
+    $('#trend-meta').textContent =
+      `${pts.length} 轮 · 末轮验 ${fmt(last.checked)} 活 ${fmt(last.ok)} · 均 ${avgDur}s`;
+  } catch (e) {
+    $('#trend-chart').innerHTML = `<div class="empty"><b>加载失败</b>${esc(e.message)}</div>`;
+  }
+}
+
+async function loadLatency() {
+  try {
+    const d = await getJSON('/api/latency');
+    barRows($('#lat-chart'), d.labels || [], d.counts || []);
+    $('#lat-meta').textContent = d.total
+      ? `均 ${fmtMs(d.avg)} · 中位 ${fmtMs(d.p50)}`
+      : '—';
+  } catch (e) {
+    $('#lat-chart').innerHTML = '<div class="empty"><b>加载失败</b></div>';
+  }
+}
+
+async function loadProxies() {
+  const p = new URLSearchParams({ page: state.page, size: state.size });
+  for (const [k, v] of Object.entries(state.filters)) if (v) p.set(k, v);
+  try {
+    const d = await getJSON('/api/proxies?' + p);
+    state.total = d.total;
+    renderTable(d.items);
+    const pages = Math.max(1, Math.ceil(d.total / state.size));
+    $('#pager-info').textContent = `第 ${state.page} / ${pages} 页 · 共 ${fmt(d.total)} 条`;
+    $('#list-total').textContent = `${fmt(d.total)} 条`;
+    $('#prev').disabled = state.page <= 1;
+    $('#next').disabled = state.page >= pages;
+  } catch (e) {
+    $('#tbody').innerHTML = `<tr><td colspan="9"><div class="empty"><b>加载失败</b>${esc(e.message)}</div></td></tr>`;
+  }
+}
+
+function renderTable(items) {
+  if (!items || !items.length) {
+    $('#tbody').innerHTML = `<tr><td colspan="9"><div class="empty">
+      <b>没有符合条件的代理</b>调整筛选条件，或点击「立即跑一轮」抓取新代理</div></td></tr>`;
+    return;
+  }
+  $('#tbody').innerHTML = items.map(p => {
+    const sc = p.score ?? 0;
+    return `<tr>
+      <td class="addr">${esc(p.ip)}:${p.port}</td>
+      <td><span class="bdg plain">${esc(p.protocol)}</span></td>
+      <td><span class="bdg ${esc(p.status)}">${STATUS[p.status] || esc(p.status)}</span></td>
+      <td>${p.anonymity
+        ? `<span class="bdg ${esc(p.anonymity)}">${ANON[p.anonymity] || esc(p.anonymity)}</span>`
+        : '<span style="color:var(--fg-3)">—</span>'}</td>
+      <td class="r num">${fmtMs(p.latency_ms)}</td>
+      <td><span class="score"><span class="score-track"><span class="score-fill"
+          style="width:${Math.max(0, Math.min(100, sc))}%;background:${scoreColor(sc)}"></span></span>${sc}</span></td>
+      <td class="r num"><span style="color:var(--ok)">${p.ok_count}</span><span style="color:var(--fg-3)">/</span><span style="color:var(--bad)">${p.fail_count}</span></td>
+      <td>${p.supports_https ? '<span class="bdg yes">是</span>' : '<span class="bdg no">否</span>'}</td>
+      <td class="num" style="color:var(--fg-3)">${fmtAgo(p.last_ok_at)}</td>
+    </tr>`;
+  }).join('');
+}
+
+async function loadRounds() {
+  try {
+    const d = await getJSON('/api/rounds?limit=15');
+    if (!d.rounds || !d.rounds.length) {
+      $('#rounds').innerHTML = '<div class="empty"><b>暂无轮次</b>点击右上角「立即跑一轮」</div>';
+      return;
+    }
+    $('#rounds').innerHTML = d.rounds.map(x => {
+      const t = x.started_at ? new Date(x.started_at) : null;
+      const hhmm = t ? t.toTimeString().slice(0, 5) : '—';
+      const dur = x.duration_ms ? (x.duration_ms / 1000).toFixed(0) + 's' : '—';
+      if (!x.checked) return `<div class="rrow"><span class="t">${hhmm}</span>
+        <span class="m"><i>空轮</i></span><span class="d">${dur}</span></div>`;
+      return `<div class="rrow">
+        <span class="t">${hhmm}</span>
+        <span class="m">
+          <i>验 <b style="color:var(--fg-2)">${x.checked}</b></i>
+          <i>活 <b style="color:var(--ok)">${x.ok}</b></i>
+          <i>挂 <b style="color:var(--bad)">${x.failed}</b></i>
+          <i>晋 <b style="color:var(--accent)">${x.promoted}</b></i>
+          ${x.fetched_new ? `<i>新 <b style="color:var(--info)">${x.fetched_new}</b></i>` : ''}
+        </span>
+        <span class="d">${dur}</span>
+      </div>`;
+    }).join('');
+  } catch (e) { /* 静默 */ }
+}
+
+async function loadErrors() {
+  try {
+    const d = await getJSON('/api/errors');
+    if (!d.errors || !d.errors.length) {
+      $('#errors').innerHTML = '<div class="empty"><b>近 6 小时无失败</b></div>';
+      return;
+    }
+    const max = Math.max(...d.errors.map(e => e.count));
+    $('#errors').innerHTML = d.errors.map(e => `<div class="erow">
+      <span class="bar" style="width:${e.count / max * 100}%"></span>
+      <span class="n">${esc(e.error)}</span>
+      <span class="c">${fmt(e.count)}</span>
+    </div>`).join('');
+  } catch (e) { /* 静默 */ }
+}
+
+function renderApiHint() {
+  const base = location.origin;
+  $('#api-base').textContent = base;
+  $('#api-code').innerHTML =
+`<span class="c"># 取 10 个（排序优先给支持 HTTPS 的）</span>
+<span class="k">curl</span> <span class="s">"${base}/get?n=10"</span>
+
+<span class="c"># 高匿 + HTTPS 实测通过率 ≥50% + 延迟 &lt;4s</span>
+<span class="k">curl</span> <span class="s">"${base}/get?n=10&amp;anonymity=elite&amp;https_rate=0.5&amp;max_latency=4000"</span>
+
+<span class="c"># 纯 ip:port 文本，直接喂爬虫</span>
+<span class="k">curl</span> <span class="s">"${base}/get?n=20&amp;format=text"</span>
+
+<span class="c"># SOCKS5</span>
+<span class="k">curl</span> <span class="s">"${base}/get?protocol=socks5&amp;n=10"</span>`;
+}
+
+/* ═══════════════════════════════════════════════
+   事件
+   ═══════════════════════════════════════════════ */
+$('#btn-refresh').onclick = () => { loadAll(); toast('已刷新'); };
+
+$('#btn-trigger').onclick = async () => {
+  const b = $('#btn-trigger');
+  b.disabled = true; b.textContent = '执行中…';
+  try {
+    const r = await fetch('/api/trigger', { method: 'POST' });
+    const d = await r.json();
+    toast(d.ok ? '已触发，约 1-3 分钟后查看' : (d.detail || '触发失败'), d.ok ? 'ok' : 'err');
+    if (d.ok) setTimeout(loadAll, 4000);
+  } catch (e) {
+    toast('触发失败: ' + e.message, 'err');
+  } finally {
+    setTimeout(() => { b.disabled = false; b.textContent = '立即跑一轮'; }, 3500);
+  }
+};
+
+$('#trend-range').onchange = (e) => {
+  state.trendRange = +e.target.value;
+  loadTrend();
+};
+
+let searchTimer = null;
+$('#f-search').oninput = (e) => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => {
+    state.filters.search = e.target.value.trim();
+    state.page = 1;
+    loadProxies();
+  }, 300);
+};
+[['#f-status', 'status'], ['#f-proto', 'protocol'], ['#f-anon', 'anonymity'],
+ ['#f-https', 'https'], ['#f-order', 'order']].forEach(([sel, key]) => {
+  $(sel).onchange = (e) => {
+    state.filters[key] = e.target.value;
+    state.page = 1;
+    loadProxies();
+  };
+});
+$('#prev').onclick = () => { if (state.page > 1) { state.page--; loadProxies(); } };
+$('#next').onclick = () => { state.page++; loadProxies(); };
+
+$('#btn-theme').onclick = () => {
+  const cur = document.documentElement.getAttribute('data-theme');
+  const next = cur === 'dark' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', next);
+  localStorage.setItem('pp-theme', next);
+  setTimeout(() => { loadTrend(); loadLatency(); }, 60);
+};
+const saved = localStorage.getItem('pp-theme');
+if (saved) document.documentElement.setAttribute('data-theme', saved);
+
+let resizeTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(loadTrend, 250);
+});
+
+function loadAll() {
+  loadStats(); loadTrend(); loadLatency(); loadProxies(); loadRounds(); loadErrors();
+}
+
+renderApiHint();
+loadAll();
+setInterval(loadAll, 20000);
+</script>
+</body>
+</html>

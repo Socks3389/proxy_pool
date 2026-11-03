@@ -1,0 +1,36 @@
+# 运行时数据（绝对不要提交，里面是实时代理库）
+data/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.log
+
+# 本地配置覆盖（真实环境配置不入库，只提交 config.yaml）
+*.local.yaml
+.env
+.env.*
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+
+# 备份 / 临时
+*.bak
+*.tmp
+*.orig
