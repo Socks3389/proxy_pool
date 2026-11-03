@@ -601,3 +601,33 @@ class TestBannedFate:
             await store.apply_results([(row, fail_result())])
         picked = await store.pick_for_check(1000)
         assert not [r for r in picked if r["status"] == BANNED]
+
+
+class TestTransparentFilter:
+    async def test_transparent_excluded_by_default(self, store):
+        """默认不返回透明代理，它们会把真实 IP 透给目标站。"""
+        row = await _one(store)
+        r = ok_result()
+        r.anonymity = "transparent"
+        await store.apply_results([(row, r)])
+
+        got = await store.get_batch(10)
+        assert not [p for p in got if p["anonymity"] == "transparent"]
+
+    async def test_transparent_returned_when_asked(self, store):
+        row = await _one(store)
+        r = ok_result()
+        r.anonymity = "transparent"
+        await store.apply_results([(row, r)])
+
+        got = await store.get_batch(10, anonymity="transparent")
+        assert [p for p in got if p["anonymity"] == "transparent"]
+
+    async def test_explicit_switch_allows_transparent(self, store):
+        row = await _one(store)
+        r = ok_result()
+        r.anonymity = "transparent"
+        await store.apply_results([(row, r)])
+
+        got = await store.get_batch(10, exclude_transparent=False)
+        assert [p for p in got if p["anonymity"] == "transparent"]

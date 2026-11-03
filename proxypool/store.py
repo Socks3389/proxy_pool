@@ -399,12 +399,17 @@ class Store:
                         anonymity: str | None = None, https_only: bool = False,
                         max_latency: int | None = None,
                         min_score: int | None = None,
-                        min_https_rate: float | None = None) -> list[dict]:
-        """取一批可用代理，按 score 与延迟排序。
+                        min_https_rate: float | None = None,
+                        exclude_transparent: bool = True) -> list[dict]:
+        """取一批可用代理，按 HTTPS 能力和 score 排序。
 
         min_https_rate：只返回 HTTPS 实测通过率 ≥ 该值的代理（0-1）。
         比 supports_https 布尔标记可靠：同一个代理的 TLS 通过率波动很大，
         一次成功就标 true 太激进，全成功才算又太保守。
+
+        exclude_transparent：默认不返回透明代理。透明代理会把请求头里的
+        真实 IP 透给目标站，爬虫拿它等于没挂代理，还会暴露自己。真要的话
+        显式传 anonymity="transparent" 或把这个开关关掉。
         """
         async with self.sf() as s:
             q = select(Proxy).where(Proxy.status == ALIVE)
@@ -412,6 +417,8 @@ class Store:
                 q = q.where(Proxy.protocol == protocol)
             if anonymity:
                 q = q.where(Proxy.anonymity == anonymity)
+            elif exclude_transparent:
+                q = q.where(Proxy.anonymity != "transparent")
             if https_only:
                 q = q.where(Proxy.supports_https.is_(True))
             if max_latency:

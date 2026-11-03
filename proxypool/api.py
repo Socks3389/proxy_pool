@@ -122,6 +122,7 @@ async def _fetch_proxies(
     max_latency: int | None = None,
     min_score: int | None = None,
     https_rate: float | None = None,
+    allow_transparent: bool = False,
 ) -> list[dict]:
     """两个取代理路由共用的取数逻辑。
 
@@ -133,6 +134,7 @@ async def _fetch_proxies(
         min(n, state.cfg.api.max_batch), protocol=protocol, anonymity=anonymity,
         https_only=https_only, max_latency=max_latency, min_score=min_score,
         min_https_rate=https_rate,
+        exclude_transparent=not allow_transparent,
     )
     if not items:
         raise HTTPException(status_code=503, detail="池中暂无可用代理")
@@ -148,11 +150,13 @@ async def get_proxy(
     max_latency: int | None = Query(None, ge=1, description="延迟上限 ms"),
     min_score: int | None = Query(None, ge=0, le=100, description="最低评分"),
     https_rate: float | None = Query(None, ge=0, le=1, description="HTTPS 实测通过率下限 0-1"),
+    allow_transparent: int = Query(0, ge=0, le=1, description="允许返回透明代理（会暴露真实 IP）"),
     format: str = Query("json", description="json|text|list"),
 ):
     items = await _fetch_proxies(
         n, protocol=protocol, anonymity=anonymity, https_only=bool(https),
         max_latency=max_latency, min_score=min_score, https_rate=https_rate,
+        allow_transparent=bool(allow_transparent),
     )
 
     if format == "text":

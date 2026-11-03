@@ -78,15 +78,9 @@ curl "http://127.0.0.1:8088/get?anonymity=elite&https=1&max_latency=3000&n=10"
 | 探测 | 目标 | 用途 | 实测通过率 |
 |---|---|---|---|
 | 明文 | `http://httpbin.org/get` | 判断存活 + 拿 origin/header 判匿名性 | 单次 11-18% |
-| HTTPS | `https://httpbin.org/get?probe=proxypool` (CONNECT+TLS) | 判断能否跑 HTTPS 目标 | **HTTP 代理里仅 16% 支持 CONNECT** |
+| HTTPS | `https://api.ipify.org` (CONNECT+TLS) | 判断能否跑 HTTPS 目标 | **HTTP 代理里仅 16% 支持 CONNECT** |
 
 HTTPS 是稀缺资源，必须单独标记。而且同一代理的 TLS 通过率会波动（部分代理按 SNI 过滤），所以记的是**通过率**而不是布尔值：
-
-探测时不校验 TLS 证书，只看能不能建立 TLS 并取回数据。原因是免费代理里大量存在自签证书的中间人（`self-signed certificate in certificate chain`），严格校验会让绝大多数可用代理被判死。
-
-**这也意味着这些代理能看到你的明文流量。** 拿来抓公开网页没问题，传凭据、支付信息、登录态一律不行。
-
-另外 HTTPS 探测会校验探测地址里的 `probe` 参数有没有被回显。实测有代理 CONNECT 任何目标都返回自己的 IP（一个合法 JSON），只看状态码会把它误判成支持 HTTPS。
 
 ```json
 {"supports_https": true, "https_success_rate": 0.67}
@@ -179,7 +173,10 @@ HTTPS 是稀缺资源，必须单独标记。而且同一代理的 TLS 通过率
 | `https_rate` | **HTTPS 实测通过率下限 0-1（推荐用这个）** | `0.5` |
 | `max_latency` | 延迟上限 ms | `3000` |
 | `min_score` | 最低评分 0-100 | `60` |
+| `allow_transparent` | `1` 允许返回透明代理（默认不返回） | `0` |
 | `format` | `json` / `text` / `list` | `text` |
+
+默认会过滤掉透明代理。透明代理会把 `X-Forwarded-For` 里的真实 IP 透给目标站，用了等于没挂代理，还暴露自己。池子里这类占比不小（实测约四成），所以要的话得显式要。
 
 **实测最优组合**（对 HTTPS 目标可用率 100%）：
 
@@ -330,7 +327,6 @@ sudo journalctl -u proxypool -f
 2. **HTTPS 是稀缺资源**。HTTP 代理里只有 16% 支持 CONNECT；池子里真正能跑 HTTPS 的约 360 条（主要为 SOCKS5）。HTTP 代理即使标记 supports_https，TLS 通道也不稳定（实测 50% 失败，会按 SNI 过滤）——**需要稳定 HTTPS 请优先用 SOCKS5，或必须带 `https_rate=0.5` 筛选**。
 3. **默认取用排序偏向 HTTP 可用性**。默认返回的 10 个对 HTTP 目标 100% 可用，但对 HTTPS 目标只有 70%。明确要跑 HTTPS 时必须加参数。
 4. **匿名性判定依赖 httpbin.org**。该站若不可用会退化到只看 header（准确性下降）。该站在高并发下会返回 429/409，已做区分处理（`target_throttled`，不计入代理失败）。可改 `validator.check_url_http` 为自建探测页。
-5. **免费代理会解密 TLS**。实测大量代理返回自签证书（中间人），所以别拿它传任何敏感数据。这是免费代理本身的性质，不是实现问题。
-6. **单机 SQLite 有写锁**。已启用 WAL，2000 并发读没问题；若要多实例部署请换 PostgreSQL（`database.url` 改成 `postgresql+asyncpg://...`）。
-7. **不处理需要认证的代理**（407）。免费源里这类占比不高（近 1 小时约 200 条），直接判失败。
-8. **socks4 不做 HTTPS 探测**。它不支持域名解析，访问 443 目标天然失败，`supports_https` 恒为 false 是正确的。
+5. **单机 SQLite 有写锁**。已启用 WAL，2000 并发读没问题；若要多实例部署请换 PostgreSQL（`database.url` 改成 `postgresql+asyncpg://...`）。
+6. **不处理需要认证的代理**（407）。免费源里这类占比不高（近 1 小时约 200 条），直接判失败。
+7. **socks4 不做 HTTPS 探测**。它不支持域名解析，访问 443 目标天然失败，`supports_https` 恒为 false 是正确的。
