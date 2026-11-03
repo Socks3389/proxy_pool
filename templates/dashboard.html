@@ -94,6 +94,9 @@
   /* ══════════ 布局 ══════════ */
   .wrap { max-width: 1600px; margin: 0 auto; padding: 20px 22px 60px; }
   .grid-2 { display: grid; grid-template-columns: 1.55fr 1fr; gap: 16px; align-items: start; }
+  /* grid 子项默认 min-width:auto，会被宽表格撑开导致整页横向溢出。
+     必须显式给 0，让 .tbl-scroll 自己出滚动条。 */
+  .grid-2 > * { min-width: 0; }
   @media (max-width: 1180px) { .grid-2 { grid-template-columns: 1fr; } }
 
   /* ══════════ 卡片 ══════════ */
@@ -289,6 +292,26 @@
     .topbar { padding: 0 14px; gap: 8px; }
     .brand small, #countdown { display: none; }
     .kpi-v { font-size: 22px; }
+    /* 4 个 KPI 在窄屏挤成两列，副标题会换行撑高 */
+    .kpi-sub { font-size: 10.5px; }
+    /* 筛选器每行放两个，别让 select 把容器撑开 */
+    .filters { padding: 10px 12px; gap: 6px; }
+    .filters select, .filters input { flex: 1 1 calc(50% - 3px); min-width: 0; font-size: 12px; }
+    .filters input { min-width: 0; }
+    /* 9 列表格在手机上放不下，只留最关键的 4 列：代理、协议、状态、延迟。
+       评分看进度条没意义，匿名/HTTPS/成功失败/最近可用都能在详情里看到。 */
+    th:nth-child(4), td:nth-child(4),   /* 匿名 */
+    th:nth-child(6), td:nth-child(6),   /* 评分 */
+    th:nth-child(7), td:nth-child(7),   /* 成功/失败 */
+    th:nth-child(8), td:nth-child(8),   /* HTTPS */
+    th:nth-child(9), td:nth-child(9) { display: none; }
+    table { font-size: 11.5px; }
+    /* 地址列在窄屏下太占宽（120.232.115.170:17981 有 169px），
+       允许断行，省出空间让整表塞进容器。 */
+    th, td { padding: 6px 6px; }
+    td.addr { max-width: 118px; word-break: break-all; line-height: 1.3; font-size: 11px; }
+    .pager { padding: 10px 12px; flex-wrap: wrap; gap: 6px; }
+    .pager .btn { flex: 0 1 auto; white-space: nowrap; }
   }
 </style>
 </head>
@@ -658,6 +681,12 @@ async function loadStats() {
     const bp = d.alive_by_protocol || {};
     $('#k-https-sub').innerHTML =
       Object.entries(bp).map(([k, v]) => `${esc(k)} <b>${v}</b>`).join(' · ') || '—';
+
+    // 可用率单看一个数字没意义，要跟"这批代理是从多少条里筛出来的"对照
+    const hr = d.alive_https_capable || 0;
+    $('#k-rate-sub').innerHTML = d.alive
+      ? `HTTPS 占 <b>${(hr / d.alive * 100).toFixed(0)}%</b> · 下线+拉黑 <b>${fmt((sc.dead || 0) + (sc.banned || 0))}</b>`
+      : '池子为空';
 
     // 池子构成堆叠条
     const total = d.total || 1;
