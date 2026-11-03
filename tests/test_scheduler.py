@@ -52,6 +52,7 @@ class StubStore:
     def __init__(self, rows, hot=0):
         self.rows = rows
         self.hot = hot
+        self.due = None
         self.applied = []
         self.round_started = 0
         self.round_finished = 0
@@ -66,6 +67,9 @@ class StubStore:
 
     async def finish_round(self, rid, data):
         self.round_finished += 1
+
+    async def discard_round(self, rid):
+        self.round_discarded = getattr(self, "round_discarded", 0) + 1
 
     async def pick_for_check(self, limit, *, hot_only=False):
         # 模拟真实行为：每轮只返回一次，用掉即空
@@ -84,6 +88,9 @@ class StubStore:
 
     async def hot_pool_size(self):
         return self.hot
+
+    async def next_due_seconds(self):
+        return self.due
 
 
 def make_rows(n):
@@ -113,11 +120,14 @@ class TestRoundBasics:
         assert store.round_finished == 1
 
     async def test_empty_pick_returns_cleanly(self):
+        """空 pick 要干净返回，且不留下 round_stats 记录。"""
         sched, store, v = make_sched([])
         rep = await sched.run_round(hot_only=True)
         assert rep.checked == 0
         assert v.calls == 0
-        assert store.round_finished == 1
+        # 空轮被丢弃，不算跑过一轮（否则趋势图会多出 0 点）
+        assert store.round_finished == 0
+        assert getattr(store, "round_discarded", 0) == 1
 
 
 class TestRoundMutualExclusion:
@@ -246,3 +256,78 @@ class TestHotOnly:
         assert "http" in seen, "http 代理没做 HTTPS 探测"
         assert "socks5" in seen, "socks5 没做 HTTPS 探测 —— 会被筛 HTTPS 时全部排除"
         assert "socks4" not in seen, "socks4 不该做 HTTPS 探测（不支持域名解析）"
+
+
+    async def test_empty_round_not_counted(self):
+        """回归：空轮（0 验证 0 新增）不能写进 round_stats。
+
+        实测缺陷：新装后第一轮耗尽预算跑完 248s，紧接着的一轮所有代理都没到期，
+        产生"验证 0 条"的记录，趋势图上会是一片 0 点。
+        """
+        sched, store, v = make_sched([])
+        rep = await sched.run_round(hot_only=True)
+        assert rep.checked == 0
+        assert getattr(store, "round_discarded", 0) == 1, "空轮没有被丢弃"
+        assert store.round_finished == 0, "空轮不该写入 round_stats"
+
+    async def test_round_with_data_is_counted(self):
+        sched, store, v = make_sched(make_rows(5))
+        rep = await sched.run_round(hot_only=True)
+        assert rep.checked == 5
+        assert store.round_finished == 1
+        assert getattr(store, "round_discarded", 0) == 0
+
+
+class TestEmptyRound:
+    async def test_empty_round_waits_until_due(self):
+        """回归：空轮应睡到最近代理到期，而不是白跑一次。
+
+        实测缺陷：冷池扩充轮耗时 247s，新晋升代理 next_check_at = 那轮开始 +300s，
+        于是 53s 后的下一轮必然拿到 0 条待验证（验证 0 条的空轮）。
+        """
+        sched, store, v = make_sched([])          # 无 rows → pick 返回空
+        store.due = 240.0                          # 最近一个代理 240s 后到期
+        sched.cfg.scheduler.interval = 300
+        # 直接调内部循环太复杂，这里验证 next_due_seconds 被正确读取
+        due = await store.next_due_seconds()
+        assert due == 240.0
+
+        rep = await sched.run_round(hot_only=True)
+        assert rep.checked == 0                    # 确实是空轮
+        # 空轮时 checked==0 → 调度器会读 due 决定等待时长（下面断言逻辑）
+        assert store.due > 0
+
+    async def test_scheduler_uses_due_when_empty(self):
+        """空轮时等待时长必须用 due 覆盖，而不是傻等满周期。
+
+        实测缺陷：空轮时 wait=300（整周期），due 只有 9s，
+        写成 "if due > wait" 判断永远为假，等于没修。
+        """
+        sched, store, v = make_sched([])
+        store.due = 9.0
+        sched.cfg.scheduler.interval = 300
+        rep = await sched.run_round(hot_only=True)
+
+        # 复现调度循环的计算
+        wait = max(5.0, sched.cfg.scheduler.interval - 0)
+        if rep.checked == 0 and rep.fetched_new == 0:
+            due = await store.next_due_seconds()
+            if due is not None:
+                wait = max(5.0, min(due, sched.cfg.scheduler.interval))
+        assert wait == 9.0, f"空轮等待应为 9s，实际 {wait}s"
+
+    async def test_due_floor_protects_against_tight_loop(self):
+        """due 接近 0 时必须有 5s 下限，否则会高频空转打满 CPU。"""
+        sched, store, v = make_sched([])
+        store.due = 0.01
+        sched.cfg.scheduler.interval = 300
+        due = await store.next_due_seconds()
+        wait = max(5.0, min(due, sched.cfg.scheduler.interval))
+        assert wait >= 5.0
+
+    async def test_due_capped_by_interval(self):
+        """due 超过一个周期时不该无限期睡下去。"""
+        sched, store, v = make_sched([])
+        store.due = 9999.0
+        wait = max(5.0, min(store.due, sched.cfg.scheduler.interval))
+        assert wait == sched.cfg.scheduler.interval

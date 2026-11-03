@@ -218,6 +218,26 @@ class Store:
                 select(func.count()).select_from(Proxy).where(Proxy.status.in_((ALIVE, CANDIDATE)))
             )).scalar_one()
 
+    async def next_due_seconds(self) -> float | None:
+        """距离最近一个待验证代理到期还有多少秒，没有则返回 None。
+
+        用途：避免"空轮"。
+        实测缺陷：冷池扩充轮耗时 247s，新晋升代理的 next_check_at 是 now+300s，
+        下一轮只等了 53s 就开始，此时没有任何代理到期 → 验证 0 条的空轮，
+        白白消耗一次调度周期（日志里表现为连续出现 "验证 0 条"）。
+        """
+        now = utcnow()
+        async with self.sf() as s:
+            nxt = (await s.execute(
+                select(func.min(Proxy.next_check_at))
+                .where(Proxy.status.in_((ALIVE, CANDIDATE, NEW, DEAD)))
+                .where(Proxy.next_check_at.is_not(None))
+                .where(Proxy.next_check_at > now)
+            )).scalar()
+        if nxt is None:
+            return None
+        return max(0.0, (nxt - now).total_seconds())
+
     async def apply_results(self, results: list[tuple[dict, ProbeResult]],
                             https_results: dict[int, ProbeResult] | None = None) -> dict:
         """把验证结果写回库存，推进状态机。返回统计。"""
@@ -756,4 +776,14 @@ class Store:
             await s.execute(
                 update(RoundStat).where(RoundStat.id == round_id).values(**data)
             )
+            await s.commit()
+
+    async def discard_round(self, round_id: int) -> None:
+        """丢弃空轮记录。
+
+        空轮（一条都没验）不该留在 round_stats 里：趋势图会多出一串 0 点，
+        让人误以为系统在空转。实测新装后立刻出现这种情况。
+        """
+        async with self.sf() as s:
+            await s.execute(delete(RoundStat).where(RoundStat.id == round_id))
             await s.commit()

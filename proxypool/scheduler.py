@@ -108,6 +108,21 @@ class Scheduler:
 
             elapsed = time.monotonic() - t0
             wait = max(5.0, self.cfg.scheduler.interval - elapsed)
+
+            # 空轮处理：本轮一条都没验，且没有新增数据。
+            # 两种情况要分开：
+            #   a) 真正空轮（所有代理都没到期）→ 按最近到期时间重排，不要傻等满周期
+            #   b) 抓取轮（抓到新数据但没验证）→ 保持正常周期
+            # ⚠️ 这里必须用 due 直接覆盖 wait，不能写成 "due > wait 才改"：
+            # 实测空轮时 wait 是 300s（整周期），due 只有 9s，
+            # 用 "due > wait" 判断会永远为假，等于没修。
+            if rep is not None and rep.checked == 0 and rep.fetched_new == 0:
+                due = await self.store.next_due_seconds()
+                if due is not None:
+                    # 下限 5s：due 可能因时钟抖动接近 0，不设下限会高频空转打满 CPU。
+                    wait = max(5.0, min(due, self.cfg.scheduler.interval))
+                    log.info("无待验证代理，等 %.0fs 到最近一个代理到期再跑", wait)
+
             log.info("本轮耗时 %.1fs，%.0fs 后开始下一轮", elapsed, wait)
             try:
                 await asyncio.wait_for(self.trigger_now.wait(), timeout=wait)
@@ -162,11 +177,18 @@ class Scheduler:
                 pick_limit = max(300, int(pick_limit * 0.4))
                 rep.truncated = True
             rows = await self.store.pick_for_check(pick_limit, hot_only=hot_only)
+
+            # 一条都没有：不是"跑了一轮什么都没干"，而是所有代理都还没到期。
+            # 明确记录到期时间，让调度循环能睡到点再跑（否则会白占一次周期）。
+            if not rows:
+                due = await self.store.next_due_seconds()
+                rep.notes = "无待验证代理" + (f"，{due:.0f}s 后到期" if due else "，库为空")
+                log.info("本轮无待验证代理%s",
+                         f"，最近一个 {due:.0f}s 后到期" if due else "，库为空")
+                return rep
+
             log.info("本轮待验证 %d 条（%s，预算 %ds）",
                      len(rows), "热池精检" if hot_only else "常规", budget)
-            if not rows:
-                rep.notes = "无待验证代理"
-                return rep
 
             # ---- 3. 并发验证，带截止时间 ----
             deadline = t_start + budget
@@ -194,17 +216,22 @@ class Scheduler:
 
         finally:
             rep.duration_ms = int((time.monotonic() - t_start) * 1000)
-            await self.store.finish_round(round_id, {
-                "finished_at": utcnow(),
-                "duration_ms": rep.duration_ms,
-                "fetched_sources": rep.fetched_sources,
-                "fetched_raw": rep.fetched_raw,
-                "fetched_new": rep.fetched_new,
-                "checked": rep.checked, "ok": rep.ok, "failed": rep.failed,
-                "promoted": rep.promoted, "killed": rep.killed,
-                "banned": rep.banned, "pruned": rep.pruned,
-                "notes": rep.notes or None,
-            })
+            # 空轮不写 round_stats：它不代表"跑了一轮"，写进去会让趋势图
+            # 出现一串验证量为 0 的点（实测新装后立即出现"验证 0 条"的空记录）。
+            if rep.checked > 0 or rep.fetched_new > 0:
+                await self.store.finish_round(round_id, {
+                    "finished_at": utcnow(),
+                    "duration_ms": rep.duration_ms,
+                    "fetched_sources": rep.fetched_sources,
+                    "fetched_raw": rep.fetched_raw,
+                    "fetched_new": rep.fetched_new,
+                    "checked": rep.checked, "ok": rep.ok, "failed": rep.failed,
+                    "promoted": rep.promoted, "killed": rep.killed,
+                    "banned": rep.banned, "pruned": rep.pruned,
+                    "notes": rep.notes or None,
+                })
+            else:
+                await self.store.discard_round(round_id)
             self.last_report = rep
             self.running = False
             log.info(
