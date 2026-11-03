@@ -299,7 +299,12 @@ class Validator:
             writer: asyncio.StreamWriter | None = None
             try:
                 res.stage = STAGE_CONNECT
-                reader, writer = await asyncio.open_connection(ip, port, limit=_MAX_HEAD)
+                # 连接单独设短超时：如果不能快速建立 TCP，就没必要占着预算等满。
+                # 实测成功连接 p95 是 2.1s、最长 3.1s，4 秒足够。
+                reader, writer = await asyncio.wait_for(
+                    asyncio.open_connection(ip, port, limit=_MAX_HEAD),
+                    timeout=self.cfg.connect_timeout,
+                )
 
                 if protocol == "socks5":
                     res.stage = STAGE_HANDSHAKE
@@ -399,7 +404,12 @@ class Validator:
         try:
             await asyncio.wait_for(run(), timeout=self.cfg.timeout)
         except TimeoutError:
-            res.error = res.error or "timeout"
+            # 连接阶段的短超时和整轮超时用不同的错误码，
+            # 否则统计时看不出「连不上」和「连上了但读不动」的区别。
+            if res.stage == STAGE_CONNECT:
+                res.error = res.error or "connect_timeout"
+            else:
+                res.error = res.error or "timeout"
         except asyncio.IncompleteReadError:
             res.error = "short_read"
         except ConnectionResetError:

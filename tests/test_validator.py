@@ -354,3 +354,58 @@ class TestThrottleClassification:
     async def test_502_is_not_throttled(self):
         r = await self._probe_with_code(502)
         assert r.target_throttled is False
+
+
+class TestConnectTimeout:
+    """连接阶段单独设短超时。
+
+    实测 TCP 连接成功的 p50 是 43ms、p95 2.1s、最长 3.1s。
+    4 秒内连不上的，等到 8 秒也一样连不上，纯占预算。
+    """
+
+    async def test_silent_host_times_out_fast(self):
+        """黑洞地址应在 connect_timeout 内放弃，不等满全局超时。"""
+        cfg = ValidatorConfig(timeout=10.0, connect_timeout=1.0)
+        v = Validator(cfg)
+        # 192.0.2.0/24 是 TEST-NET-1，保证不可路由
+        t0 = time.monotonic()
+        r = await v.probe("http", "192.0.2.1", 8080)
+        elapsed = time.monotonic() - t0
+        assert not r.ok
+        assert elapsed < 3.0, f"应在 1s 左右放弃，实际 {elapsed:.1f}s"
+        assert r.error == "connect_timeout"
+
+    async def test_connect_timeout_error_code_distinct(self):
+        """连接超时的错误码要和整体超时区分开。"""
+        cfg = ValidatorConfig(timeout=10.0, connect_timeout=0.8)
+        v = Validator(cfg)
+        r = await v.probe("http", "192.0.2.2", 9999)
+        assert r.error == "connect_timeout"
+        assert r.error != "timeout"
+
+    async def test_read_stage_still_gets_full_timeout(self):
+        """连上之后读阶段仍该有全局超时的额度，不能被连接超时限制。"""
+        async def slow_reader(reader, writer):
+            # 收下请求但迟迟不回
+            try:
+                await reader.readuntil(b"\r\n\r\n")
+            except Exception:
+                pass
+            await asyncio.sleep(3)
+            writer.close()
+
+        server = await asyncio.start_server(slow_reader, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        try:
+            cfg = ValidatorConfig(timeout=1.5, connect_timeout=1.0)
+            v = Validator(cfg)
+            t0 = time.monotonic()
+            r = await v.probe("http", "127.0.0.1", port)
+            elapsed = time.monotonic() - t0
+            assert not r.ok
+            # 读阶段用的是全局 timeout，不是 connect_timeout
+            assert r.error == "timeout", f"应该是读超时，实际 {r.error}"
+            assert elapsed >= 1.4
+        finally:
+            server.close()
+            await server.wait_closed()

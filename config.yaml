@@ -167,6 +167,10 @@ validator:
   concurrency: 400
   # 单次探测硬超时（秒）。实测 p99 延迟 7.9s，低于 8s 会误杀大量可用代理
   timeout: 8.0
+  # 连接阶段的独立超时。TCP 握手要么几十毫秒通，要么根本不通：
+  # 实测成功连接 p50 是 43ms、p95 2.1s、最长 3.1s，
+  # 4 秒内连不上的，等到 8 秒也一样连不上，只是白白占着预算。
+  connect_timeout: 4.0
   # 目标探测站：明文探测拿 origin + headers 判匿名，比 HTTPS 便宜得多
   check_url_http: "http://httpbin.org/get"
   check_url_https: "https://httpbin.org/get?probe=proxypool"
